@@ -10,3 +10,4 @@ mtcnn-runtime
 tqdm
 starlette
 python-multipart
+gradio>=3.50.0
