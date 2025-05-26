@@ -18,7 +18,7 @@ RUN mkdir -p retinaface/
 RUN mkdir -p modnet_photographic_portrait_matting/
 RUN mkdir -p hivision/creator/weights/
 
-# Download model files during build with authentication
+# Download model files during build with authentication here
 RUN curl -L -H "Authorization: token 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" \
     "https://github.com/KingOfPeru/myHiVisionIDPhotos/releases/download/v1.0.0-models/RetinaFace-R50.pth" -o retinaface/RetinaFace-R50.pth && \
     curl -L -H "Authorization: token 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" \
