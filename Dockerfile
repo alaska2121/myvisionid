@@ -18,19 +18,16 @@ RUN mkdir -p retinaface/
 RUN mkdir -p modnet_photographic_portrait_matting/
 RUN mkdir -p hivision/creator/weights/
 
-# Download model files during build with authentication and verbose output
+# Download model files during build
 RUN set -x && \
-    curl -v -L -H "Authorization: token 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" \
-         -H "Accept: application/octet-stream" \
-         "https://github.com/KingOfPeru/myHiVisionIDPhotos/releases/download/v1.0.1-models/RetinaFace-R50.pth" \
+    curl -v -L \
+         "https://huggingface.co/akhaliq/RetinaFace-R50/resolve/main/RetinaFace-R50.pth" \
          -o retinaface/RetinaFace-R50.pth && \
-    curl -v -L -H "Authorization: token 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" \
-         -H "Accept: application/octet-stream" \
-         "https://github.com/KingOfPeru/myHiVisionIDPhotos/releases/download/v1.0.1-models/modnet_photographic_portrait_matting.ckpt" \
+    curl -v -L \
+         "https://huggingface.co/yao123/test/resolve/main/modnet_photographic_portrait_matting.ckpt" \
          -o modnet_photographic_portrait_matting/modnet_photographic_portrait_matting.ckpt && \
-    curl -v -L -H "Authorization: token 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" \
-         -H "Accept: application/octet-stream" \
-         "https://github.com/KingOfPeru/myHiVisionIDPhotos/releases/download/v1.0.1-models/birefnet-v1-lite.onnx" \
+    curl -v -L \
+         "https://huggingface.co/TheEeeeLin/HivisionIDPhotos_matting/resolve/45df3ded47167a551b8b17b61af4fb6e324051da/birefnet-v1-lite.onnx" \
          -o hivision/creator/weights/birefnet-v1-lite.onnx
 
 # Copy the rest of the application
