@@ -18,13 +18,20 @@ RUN mkdir -p retinaface/
 RUN mkdir -p modnet_photographic_portrait_matting/
 RUN mkdir -p hivision/creator/weights/
 
-# Download model files during build with authentication here
-RUN curl -L -H "Authorization: token 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" \
-    "https://github.com/KingOfPeru/myHiVisionIDPhotos/releases/download/v1.0.1-models/RetinaFace-R50.pth" -o retinaface/RetinaFace-R50.pth && \
-    curl -L -H "Authorization: token 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" \
-    "https://github.com/KingOfPeru/myHiVisionIDPhotos/releases/download/v1.0.1-models/modnet_photographic_portrait_matting.ckpt" -o modnet_photographic_portrait_matting/modnet_photographic_portrait_matting.ckpt && \
-    curl -L -H "Authorization: token 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" \
-    "https://github.com/KingOfPeru/myHiVisionIDPhotos/releases/download/v1.0.1-models/birefnet-v1-lite.onnx" -o hivision/creator/weights/birefnet-v1-lite.onnx
+# Download model files during build with authentication and verbose output
+RUN set -x && \
+    curl -v -L -H "Authorization: Bearer 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" \
+         -H "Accept: application/octet-stream" \
+         "https://github.com/KingOfPeru/myHiVisionIDPhotos/releases/download/v1.0.1-models/RetinaFace-R50.pth" \
+         -o retinaface/RetinaFace-R50.pth && \
+    curl -v -L -H "Authorization: Bearer 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" \
+         -H "Accept: application/octet-stream" \
+         "https://github.com/KingOfPeru/myHiVisionIDPhotos/releases/download/v1.0.1-models/modnet_photographic_portrait_matting.ckpt" \
+         -o modnet_photographic_portrait_matting/modnet_photographic_portrait_matting.ckpt && \
+    curl -v -L -H "Authorization: Bearer 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" \
+         -H "Accept: application/octet-stream" \
+         "https://github.com/KingOfPeru/myHiVisionIDPhotos/releases/download/v1.0.1-models/birefnet-v1-lite.onnx" \
+         -o hivision/creator/weights/birefnet-v1-lite.onnx
 
 # Copy the rest of the application
 COPY . .
