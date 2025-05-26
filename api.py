@@ -6,10 +6,10 @@ import io
 
 app = FastAPI()
 
-# Set paths
-retinaface_model_path = "/Users/albertoperedarojas/ai/mytools/HivisionIDPhotos/retinaface/RetinaFace-R50.pth"
-modnet_model_path = "/Users/albertoperedarojas/ai/mytools/HivisionIDPhotos/modnet_photographic_portrait_matting/modnet_photographic_portrait_matting.ckpt"
-onnx_model_path = "/Users/albertoperedarojas/ai/mytools/HivisionIDPhotos/hivision/creator/weights/birefnet-v1-lite.onnx"
+# Set paths relative to the app directory
+retinaface_model_path = "retinaface/RetinaFace-R50.pth"
+modnet_model_path = "modnet_photographic_portrait_matting/modnet_photographic_portrait_matting.ckpt"
+onnx_model_path = "hivision/creator/weights/birefnet-v1-lite.onnx"
 
 # Check model files
 if not os.path.isfile(retinaface_model_path):
