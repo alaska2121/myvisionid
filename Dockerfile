@@ -6,6 +6,7 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     libglib2.0-0 \
+    curl \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements first to leverage Docker cache
@@ -17,10 +18,11 @@ RUN mkdir -p retinaface/
 RUN mkdir -p modnet_photographic_portrait_matting/
 RUN mkdir -p hivision/creator/weights/
 
-# Copy model files
-COPY retinaface/RetinaFace-R50.pth retinaface/
-COPY modnet_photographic_portrait_matting/modnet_photographic_portrait_matting.ckpt modnet_photographic_portrait_matting/
-COPY hivision/creator/weights/birefnet-v1-lite.onnx hivision/creator/weights/
+# Download model files during build (replace YOUR_USERNAME and YOUR_REPO with actual values)
+ARG GITHUB_RELEASE_TAG=v1.0.0-models
+RUN curl -L "https://github.com/KingOfPeru/myHiVisionIDPhotos/releases/download/${GITHUB_RELEASE_TAG}/RetinaFace-R50.pth" -o retinaface/RetinaFace-R50.pth && \
+    curl -L "https://github.com/KingOfPeru/myHiVisionIDPhotos/releases/download/${GITHUB_RELEASE_TAG}/modnet_photographic_portrait_matting.ckpt" -o modnet_photographic_portrait_matting/modnet_photographic_portrait_matting.ckpt && \
+    curl -L "https://github.com/KingOfPeru/myHiVisionIDPhotos/releases/download/${GITHUB_RELEASE_TAG}/birefnet-v1-lite.onnx" -o hivision/creator/weights/birefnet-v1-lite.onnx
 
 # Copy the rest of the application
 COPY . .

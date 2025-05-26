@@ -3,14 +3,16 @@ from inference import run
 from concurrent.futures import ProcessPoolExecutor, TimeoutError
 import multiprocessing
 import random
+from model_downloader import get_model_path
 
 # Set paths
-input_dir = "/Users/albertoperedarojas/ai/mytools/HivisionIDPhotos/input_images"
-output_dir = "/Users/albertoperedarojas/ai/mytools/HivisionIDPhotos/output_images"
-retinaface_model_path = "/Users/albertoperedarojas/ai/mytools/HivisionIDPhotos/retinaface/RetinaFace-R50.pth"
-modnet_model_path = "/Users/albertoperedarojas/ai/mytools/HivisionIDPhotos/modnet_photographic_portrait_matting/modnet_photographic_portrait_matting.ckpt"
-onnx_model_path = "/Users/albertoperedarojas/ai/mytools/HivisionIDPhotos/hivision/creator/weights/birefnet-v1-lite.onnx"
-# onnx_model_path = "/Users/albertoperedarojas/ai/mytools/HivisionIDPhotos/hivision/creator/weights/modnet_photographic_portrait_matting.onnx"
+input_dir = "input_images"
+output_dir = "output_images"
+
+# Get model paths dynamically
+retinaface_model_path = get_model_path("retinaface")
+modnet_model_path = get_model_path("modnet")
+onnx_model_path = get_model_path("birefnet")
 
 # Fixed list of colors (20 shades)
 fixed_colors = [
