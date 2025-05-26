@@ -18,11 +18,13 @@ RUN mkdir -p retinaface/
 RUN mkdir -p modnet_photographic_portrait_matting/
 RUN mkdir -p hivision/creator/weights/
 
-# Download model files during build (replace YOUR_USERNAME and YOUR_REPO with actual values)
-ARG GITHUB_RELEASE_TAG=v1.0.0-models
-RUN curl -L "https://github.com/KingOfPeru/myHiVisionIDPhotos/releases/download/${GITHUB_RELEASE_TAG}/RetinaFace-R50.pth" -o retinaface/RetinaFace-R50.pth && \
-    curl -L "https://github.com/KingOfPeru/myHiVisionIDPhotos/releases/download/${GITHUB_RELEASE_TAG}/modnet_photographic_portrait_matting.ckpt" -o modnet_photographic_portrait_matting/modnet_photographic_portrait_matting.ckpt && \
-    curl -L "https://github.com/KingOfPeru/myHiVisionIDPhotos/releases/download/${GITHUB_RELEASE_TAG}/birefnet-v1-lite.onnx" -o hivision/creator/weights/birefnet-v1-lite.onnx
+# Download model files during build with authentication
+RUN curl -L -H "Authorization: token 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" \
+    "https://github.com/KingOfPeru/myHiVisionIDPhotos/releases/download/v1.0.0-models/RetinaFace-R50.pth" -o retinaface/RetinaFace-R50.pth && \
+    curl -L -H "Authorization: token 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" \
+    "https://github.com/KingOfPeru/myHiVisionIDPhotos/releases/download/v1.0.0-models/modnet_photographic_portrait_matting.ckpt" -o modnet_photographic_portrait_matting/modnet_photographic_portrait_matting.ckpt && \
+    curl -L -H "Authorization: token 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" \
+    "https://github.com/KingOfPeru/myHiVisionIDPhotos/releases/download/v1.0.0-models/birefnet-v1-lite.onnx" -o hivision/creator/weights/birefnet-v1-lite.onnx
 
 # Copy the rest of the application
 COPY . .
