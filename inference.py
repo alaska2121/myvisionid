@@ -16,6 +16,8 @@ from hivision.creator.layout_calculator import (
 )
 from hivision.creator.choose_handler import choose_handler
 
+#test
+
 INFERENCE_TYPE = [
     "idphoto",
     "human_matting",
