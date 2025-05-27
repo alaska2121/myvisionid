@@ -55,107 +55,133 @@ def run(
     matting_model="modnet_photographic_portrait_matting",
     face_detect_model="mtcnn",
 ):
-    creator = IDCreator()
-    choose_handler(creator, matting_model, face_detect_model)
+    print(f"Starting image processing with parameters:")
+    print(f"- Input path: {input_image_path}")
+    print(f"- Output path: {output_image_path}")
+    print(f"- Type: {type}")
+    print(f"- Size: {height}x{width}")
+    print(f"- Color: {color}")
+    print(f"- Matting model: {matting_model}")
+    print(f"- Face detection model: {face_detect_model}")
 
-    input_image = cv2.imread(input_image_path, cv2.IMREAD_UNCHANGED)
-
-    size = (int(height), int(width))
-
-    if type == "idphoto":
-        try:
-            result = creator(input_image, size=size, face_alignment=face_align)
-        except FaceError:
-            print("人脸数量不等于 1，请上传单张人脸的图像。")
-            return
-        # save_image_dpi_to_bytes(
-        #     cv2.cvtColor(result.standard, cv2.COLOR_RGBA2BGRA),
-        #     output_image_path,
-        #     dpi=dpi,
-        # )
-        file_name, file_extension = os.path.splitext(output_image_path)
-        new_file_name = file_name + "_hd" + file_extension
-        save_image_dpi_to_bytes(
-            cv2.cvtColor(result.hd, cv2.COLOR_RGBA2BGRA), new_file_name, dpi=dpi
-        )
-
-    elif type == "human_matting":
-        result = creator(input_image, change_bg_only=True)
-        cv2.imwrite(output_image_path, result.hd)
-
-    elif type == "add_background":
-        render_choice = ["pure_color", "updown_gradient", "center_gradient"]
-        rgb_color = hex_to_rgb(color)
-        bgr_color = (rgb_color[2], rgb_color[1], rgb_color[0])
-        print(f"Applying background color: BGR{bgr_color}")
-
-        # Initialize IDCreator for matting
+    try:
         creator = IDCreator()
+        print("Created IDCreator instance")
+        
         choose_handler(creator, matting_model, face_detect_model)
+        print("Selected handler for matting and face detection")
 
-        # Perform human matting
+        print(f"Reading input image from {input_image_path}")
         input_image = cv2.imread(input_image_path, cv2.IMREAD_UNCHANGED)
-        result = creator(input_image, change_bg_only=True)
-        matted_image = result.hd  # Use HD matted output (RGBA)
+        if input_image is None:
+            raise ValueError(f"Failed to read input image from {input_image_path}")
+        print(f"Input image shape: {input_image.shape}")
 
-        # Apply background color
-        result_image = add_background(
-            matted_image, bgr=bgr_color, mode=render_choice[render]
-        )
-        result_image = result_image.astype(np.uint8)
+        size = (int(height), int(width))
+        print(f"Target size: {size}")
 
-        # Ensure no alpha channel (convert to BGR for solid background)
-        if result_image.shape[2] == 4:
-            result_image = cv2.cvtColor(result_image, cv2.COLOR_RGBA2BGR)
-        else:
-            result_image = cv2.cvtColor(result_image, cv2.COLOR_RGB2BGR)
-
-        # Force JPEG output
-        output_image_path = os.path.splitext(output_image_path)[0] + ".jpg"
-
-        if kb:
-            resize_image_to_kb(result_image, output_image_path, int(kb), dpi=dpi)
-        else:
-            save_image_dpi_to_bytes(result_image, output_image_path, dpi=dpi)
-
-    elif type == "generate_layout_photos":
-        typography_arr, typography_rotate = generate_layout_array(
-            input_height=size[0], input_width=size[1]
-        )
-        result_layout_image = generate_layout_image(
-            input_image,
-            typography_arr,
-            typography_rotate,
-            height=size[0],
-            width=size[1],
-        )
-
-        if kb:
-            result_layout_image = cv2.cvtColor(result_layout_image, cv2.COLOR_RGB2BGR)
-            resize_image_to_kb(result_layout_image, output_image_path, int(kb), dpi=dpi)
-        else:
+        if type == "idphoto":
+            try:
+                result = creator(input_image, size=size, face_alignment=face_align)
+            except FaceError:
+                print("人脸数量不等于 1，请上传单张人脸的图像。")
+                return
+            # save_image_dpi_to_bytes(
+            #     cv2.cvtColor(result.standard, cv2.COLOR_RGBA2BGRA),
+            #     output_image_path,
+            #     dpi=dpi,
+            # )
+            file_name, file_extension = os.path.splitext(output_image_path)
+            new_file_name = file_name + "_hd" + file_extension
             save_image_dpi_to_bytes(
-                cv2.cvtColor(result_layout_image, cv2.COLOR_RGBA2BGRA),
+                cv2.cvtColor(result.hd, cv2.COLOR_RGBA2BGRA), new_file_name, dpi=dpi
+            )
+
+        elif type == "human_matting":
+            result = creator(input_image, change_bg_only=True)
+            cv2.imwrite(output_image_path, result.hd)
+
+        elif type == "add_background":
+            render_choice = ["pure_color", "updown_gradient", "center_gradient"]
+            rgb_color = hex_to_rgb(color)
+            bgr_color = (rgb_color[2], rgb_color[1], rgb_color[0])
+            print(f"Applying background color: BGR{bgr_color}")
+
+            print("Performing human matting...")
+            result = creator(input_image, change_bg_only=True)
+            matted_image = result.hd  # Use HD matted output (RGBA)
+            print(f"Matted image shape: {matted_image.shape}")
+
+            print("Applying background color...")
+            result_image = add_background(
+                matted_image, bgr=bgr_color, mode=render_choice[render]
+            )
+            result_image = result_image.astype(np.uint8)
+            print(f"Result image shape: {result_image.shape}")
+
+            # Ensure no alpha channel (convert to BGR for solid background)
+            if result_image.shape[2] == 4:
+                print("Converting RGBA to BGR...")
+                result_image = cv2.cvtColor(result_image, cv2.COLOR_RGBA2BGR)
+            else:
+                print("Converting RGB to BGR...")
+                result_image = cv2.cvtColor(result_image, cv2.COLOR_RGB2BGR)
+
+            # Force JPEG output
+            output_image_path = os.path.splitext(output_image_path)[0] + ".jpg"
+            print(f"Final output path: {output_image_path}")
+
+            if kb:
+                print(f"Resizing image to {kb}KB...")
+                resize_image_to_kb(result_image, output_image_path, int(kb), dpi=dpi)
+            else:
+                print(f"Saving image with DPI {dpi}...")
+                save_image_dpi_to_bytes(result_image, output_image_path, dpi=dpi)
+            
+            print("Image processing completed successfully")
+            return
+
+        elif type == "generate_layout_photos":
+            typography_arr, typography_rotate = generate_layout_array(
+                input_height=size[0], input_width=size[1]
+            )
+            result_layout_image = generate_layout_image(
+                input_image,
+                typography_arr,
+                typography_rotate,
+                height=size[0],
+                width=size[1],
+            )
+
+            if kb:
+                result_layout_image = cv2.cvtColor(result_layout_image, cv2.COLOR_RGB2BGR)
+                resize_image_to_kb(result_layout_image, output_image_path, int(kb), dpi=dpi)
+            else:
+                save_image_dpi_to_bytes(
+                    cv2.cvtColor(result_layout_image, cv2.COLOR_RGBA2BGRA),
+                    output_image_path,
+                    dpi=dpi,
+                )
+
+        elif type == "idphoto_crop":
+            try:
+                result = creator(input_image, size=size, crop_only=True)
+            except FaceError:
+                print("人脸数量不等于 1，请上传单张人脸的图像。")
+                return
+            save_image_dpi_to_bytes(
+                cv2.cvtColor(result.standard, cv2.COLOR_RGBA2BGRA),
                 output_image_path,
                 dpi=dpi,
             )
+            file_name, file_extension = os.path.splitext(output_image_path)
+            new_file_name = file_name + "_hd" + file_extension
+            save_image_dpi_to_bytes(
+                cv2.cvtColor(result.hd, cv2.COLOR_RGBA2BGRA), new_file_name, dpi=dpi
+            )
 
-    elif type == "idphoto_crop":
-        try:
-            result = creator(input_image, size=size, crop_only=True)
-        except FaceError:
-            print("人脸数量不等于 1，请上传单张人脸的图像。")
-            return
-        save_image_dpi_to_bytes(
-            cv2.cvtColor(result.standard, cv2.COLOR_RGBA2BGRA),
-            output_image_path,
-            dpi=dpi,
-        )
-        file_name, file_extension = os.path.splitext(output_image_path)
-        new_file_name = file_name + "_hd" + file_extension
-        save_image_dpi_to_bytes(
-            cv2.cvtColor(result.hd, cv2.COLOR_RGBA2BGRA), new_file_name, dpi=dpi
-        )
+    except Exception as e:
+        print(f"Image processing failed: {e}")
 
 
 def main():

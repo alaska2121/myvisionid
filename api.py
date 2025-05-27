@@ -1,9 +1,10 @@
 from fastapi import FastAPI, File, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import Response, JSONResponse
 import os
 from inference import run
 import io
-from fastapi.responses import JSONResponse
+import traceback
+import sys
 
 app = FastAPI()
 
@@ -43,6 +44,19 @@ else:
     else:
         print(f"Fallback model found at: {onnx_model_path}")
 
+@app.get("/process-image")
+async def process_image_get():
+    """
+    GET endpoint for process-image that returns usage instructions
+    """
+    return JSONResponse(
+        content={
+            "status": "info",
+            "message": "This endpoint only accepts POST requests. Please send your image as a POST request with the image file in the request body.",
+            "example": "curl -X POST -F 'file=@your_image.jpg' https://myvisionid-production.up.railway.app/process-image"
+        }
+    )
+
 @app.post("/process-image")
 async def process_image(file: UploadFile = File(...)):
     """
@@ -63,38 +77,76 @@ async def process_image(file: UploadFile = File(...)):
         content = await file.read()
         print(f"File size: {len(content)} bytes")
         
+        if len(content) > 10 * 1024 * 1024:  # 10MB limit
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "status": "error",
+                    "message": "File too large. Maximum size is 10MB."
+                }
+            )
+        
         print(f"Saving to {temp_input}")
         with open(temp_input, "wb") as f:
             f.write(content)
         
         print("Processing image...")
-        # Process using the same function as addbackground_multiprocess
-        run(
-            input_image_path=temp_input,
-            output_image_path=temp_output,
-            type="add_background",
-            height=288,
-            width=240,
-            color="FFFFFF",  # Pure white
-            hd=True,
-            kb=None,
-            render=0,
-            dpi=300,
-            face_align=False,
-            matting_model=matting_model,
-            face_detect_model="retinaface-resnet50",
-        )
+        try:
+            # Process using the same function as addbackground_multiprocess
+            run(
+                input_image_path=temp_input,
+                output_image_path=temp_output,
+                type="add_background",
+                height=288,
+                width=240,
+                color="FFFFFF",  # Pure white
+                hd=True,
+                kb=None,
+                render=0,
+                dpi=300,
+                face_align=False,
+                matting_model=matting_model,
+                face_detect_model="retinaface-resnet50",
+            )
+        except Exception as processing_error:
+            print(f"Error during image processing: {str(processing_error)}")
+            print("Full traceback:")
+            traceback.print_exc(file=sys.stdout)
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "status": "error",
+                    "message": f"Error during image processing: {str(processing_error)}",
+                    "type": type(processing_error).__name__
+                }
+            )
         
         print("Reading processed image...")
-        # Read the processed image
-        with open(temp_output, "rb") as f:
-            processed_image = f.read()
-        
-        print(f"Processed image size: {len(processed_image)} bytes")
+        try:
+            # Read the processed image
+            with open(temp_output, "rb") as f:
+                processed_image = f.read()
+            
+            print(f"Processed image size: {len(processed_image)} bytes")
+        except Exception as read_error:
+            print(f"Error reading processed image: {str(read_error)}")
+            print("Full traceback:")
+            traceback.print_exc(file=sys.stdout)
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "status": "error",
+                    "message": f"Error reading processed image: {str(read_error)}",
+                    "type": type(read_error).__name__
+                }
+            )
             
         # Clean up temp files
-        os.remove(temp_input)
-        os.remove(temp_output)
+        try:
+            os.remove(temp_input)
+            os.remove(temp_output)
+        except Exception as cleanup_error:
+            print(f"Warning: Error during cleanup: {str(cleanup_error)}")
         
         print("Returning response...")
         # Return the processed image
@@ -109,17 +161,23 @@ async def process_image(file: UploadFile = File(...)):
         
     except Exception as e:
         print(f"Error occurred: {str(e)}")
+        print("Full traceback:")
+        traceback.print_exc(file=sys.stdout)
         # Clean up temp files in case of error
-        if os.path.exists(temp_input):
-            os.remove(temp_input)
-        if os.path.exists(temp_output):
-            os.remove(temp_output)
+        try:
+            if os.path.exists(temp_input):
+                os.remove(temp_input)
+            if os.path.exists(temp_output):
+                os.remove(temp_output)
+        except Exception as cleanup_error:
+            print(f"Warning: Error during cleanup: {str(cleanup_error)}")
         # Return a more detailed error response
         return JSONResponse(
             status_code=500,
             content={
                 "status": "error",
                 "message": str(e),
-                "type": type(e).__name__
+                "type": type(e).__name__,
+                "traceback": traceback.format_exc()
             }
         ) 
