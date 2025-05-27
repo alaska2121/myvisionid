@@ -3,6 +3,7 @@ from fastapi.responses import Response
 import os
 from inference import run
 import io
+from fastapi.responses import JSONResponse
 
 app = FastAPI()
 
@@ -11,23 +12,36 @@ retinaface_model_path = "retinaface/RetinaFace-R50.pth"
 modnet_model_path = "modnet_photographic_portrait_matting/modnet_photographic_portrait_matting.ckpt"
 onnx_model_path = "hivision/creator/weights/birefnet-v1-lite.onnx"
 
+# Add detailed logging for model files
+print("Checking model files...")
+print(f"Current working directory: {os.getcwd()}")
+print(f"Directory contents: {os.listdir('.')}")
+
 # Check model files
 if not os.path.isfile(retinaface_model_path):
+    print(f"RetinaFace model not found at: {retinaface_model_path}")
+    print(f"Directory contents of retinaface/: {os.listdir('retinaface') if os.path.exists('retinaface') else 'Directory not found'}")
     raise FileNotFoundError(f"RetinaFace model not found at: {retinaface_model_path}")
+else:
+    print(f"RetinaFace model found at: {retinaface_model_path}")
 
 # Determine matting model
 if os.path.isfile(onnx_model_path):
     matting_model = "birefnet-v1-lite"
-    print("Using birefnet-v1-lite model")
+    print(f"Using birefnet-v1-lite model at: {onnx_model_path}")
 elif os.path.isfile(modnet_model_path):
     matting_model = "birefnet-v1-lite"
-    print("Using birefnet-v1-lite model from modnet path")
+    print(f"Using birefnet-v1-lite model from modnet path: {modnet_model_path}")
 else:
     print("Warning: MODNet model not found. Falling back to hivision_modnet.")
     matting_model = "hivision_modnet"
     onnx_model_path = "hivision/creator/weights/hivision_modnet.onnx"
     if not os.path.isfile(onnx_model_path):
+        print(f"Fallback model not found at: {onnx_model_path}")
+        print(f"Directory contents of hivision/creator/weights/: {os.listdir('hivision/creator/weights') if os.path.exists('hivision/creator/weights') else 'Directory not found'}")
         raise FileNotFoundError(f"Fallback model not found at: {onnx_model_path}")
+    else:
+        print(f"Fallback model found at: {onnx_model_path}")
 
 @app.post("/process-image")
 async def process_image(file: UploadFile = File(...)):
@@ -100,4 +114,12 @@ async def process_image(file: UploadFile = File(...)):
             os.remove(temp_input)
         if os.path.exists(temp_output):
             os.remove(temp_output)
-        raise e 
+        # Return a more detailed error response
+        return JSONResponse(
+            status_code=500,
+            content={
+                "status": "error",
+                "message": str(e),
+                "type": type(e).__name__
+            }
+        ) 
