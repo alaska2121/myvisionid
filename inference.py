@@ -4,6 +4,8 @@ import argparse
 import numpy as np
 import logging
 import traceback
+import gc
+import psutil
 from hivision.error import FaceError
 from hivision.utils import (
     hex_to_rgb,
@@ -42,6 +44,11 @@ FACE_DETECT_MODEL = [
 RENDER = [0, 1, 2]
 
 
+def log_memory_usage():
+    process = psutil.Process()
+    memory_info = process.memory_info()
+    logging.info(f"Memory usage: {memory_info.rss / 1024 / 1024:.2f} MB")
+
 def run(
     input_image_path,
     output_image_path,
@@ -65,19 +72,23 @@ def run(
     logging.info(f"- Color: {color}")
     logging.info(f"- Matting model: {matting_model}")
     logging.info(f"- Face detection model: {face_detect_model}")
+    log_memory_usage()
 
     try:
         creator = IDCreator()
         logging.info("Created IDCreator instance")
+        log_memory_usage()
         
         choose_handler(creator, matting_model, face_detect_model)
         logging.info("Selected handler for matting and face detection")
+        log_memory_usage()
 
         logging.info(f"Reading input image from {input_image_path}")
         input_image = cv2.imread(input_image_path, cv2.IMREAD_UNCHANGED)
         if input_image is None:
             raise ValueError(f"Failed to read input image from {input_image_path}")
         logging.info(f"Input image shape: {input_image.shape}")
+        log_memory_usage()
 
         size = (int(height), int(width))
         logging.info(f"Target size: {size}")
@@ -110,16 +121,31 @@ def run(
             logging.info(f"Applying background color: BGR{bgr_color}")
 
             logging.info("Performing human matting...")
-            result = creator(input_image, change_bg_only=True)
-            matted_image = result.hd  # Use HD matted output (RGBA)
-            logging.info(f"Matted image shape: {matted_image.shape}")
+            log_memory_usage()
+            try:
+                result = creator(input_image, change_bg_only=True)
+                matted_image = result.hd  # Use HD matted output (RGBA)
+                logging.info(f"Matted image shape: {matted_image.shape}")
+                log_memory_usage()
+            except Exception as matting_error:
+                logging.error(f"Error during human matting: {str(matting_error)}")
+                logging.error("Full traceback:")
+                logging.error(traceback.format_exc())
+                raise
 
             logging.info("Applying background color...")
-            result_image = add_background(
-                matted_image, bgr=bgr_color, mode=render_choice[render]
-            )
-            result_image = result_image.astype(np.uint8)
-            logging.info(f"Result image shape: {result_image.shape}")
+            try:
+                result_image = add_background(
+                    matted_image, bgr=bgr_color, mode=render_choice[render]
+                )
+                result_image = result_image.astype(np.uint8)
+                logging.info(f"Result image shape: {result_image.shape}")
+                log_memory_usage()
+            except Exception as bg_error:
+                logging.error(f"Error applying background: {str(bg_error)}")
+                logging.error("Full traceback:")
+                logging.error(traceback.format_exc())
+                raise
 
             # Ensure no alpha channel (convert to BGR for solid background)
             if result_image.shape[2] == 4:
@@ -128,6 +154,10 @@ def run(
             else:
                 logging.info("Converting RGB to BGR...")
                 result_image = cv2.cvtColor(result_image, cv2.COLOR_RGB2BGR)
+
+            # Force garbage collection
+            gc.collect()
+            log_memory_usage()
 
             # Force JPEG output
             output_image_path = os.path.splitext(output_image_path)[0] + ".jpg"
@@ -139,6 +169,10 @@ def run(
             else:
                 logging.info(f"Saving image with DPI {dpi}...")
                 save_image_dpi_to_bytes(result_image, output_image_path, dpi=dpi)
+            
+            # Force garbage collection
+            gc.collect()
+            log_memory_usage()
             
             logging.info("Image processing completed successfully")
             return
@@ -186,6 +220,8 @@ def run(
         logging.error(f"Image processing failed: {e}")
         logging.error("Full traceback:")
         logging.error(traceback.format_exc())
+        # Force garbage collection before raising
+        gc.collect()
         raise  # Re-raise the exception to be handled by the caller
 
 

@@ -7,6 +7,10 @@ import traceback
 import sys
 import logging
 from datetime import datetime
+import gc
+import asyncio
+from concurrent.futures import ThreadPoolExecutor
+import psutil
 
 # Set up logging
 log_dir = "logs"
@@ -23,6 +27,9 @@ logging.basicConfig(
 )
 
 app = FastAPI()
+
+# Create a thread pool for CPU-intensive tasks
+thread_pool = ThreadPoolExecutor(max_workers=1)
 
 # Set paths relative to the app directory
 retinaface_model_path = "retinaface/RetinaFace-R50.pth"
@@ -60,6 +67,11 @@ else:
     else:
         logging.info(f"Fallback model found at: {onnx_model_path}")
 
+def log_memory_usage():
+    process = psutil.Process()
+    memory_info = process.memory_info()
+    logging.info(f"Memory usage: {memory_info.rss / 1024 / 1024:.2f} MB")
+
 @app.get("/process-image")
 async def process_image_get():
     """
@@ -79,6 +91,7 @@ async def process_image(file: UploadFile = File(...)):
     Process an uploaded image by adding a pure white background
     """
     logging.info(f"Received file: {file.filename}")
+    log_memory_usage()
     
     # Create temp directory if it doesn't exist
     os.makedirs("temp", exist_ok=True)
@@ -108,23 +121,34 @@ async def process_image(file: UploadFile = File(...)):
             f.write(content)
         
         logging.info("Processing image...")
+        log_memory_usage()
+        
         try:
-            # Process using the same function as addbackground_multiprocess
-            run(
-                input_image_path=temp_input,
-                output_image_path=temp_output,
-                type="add_background",
-                height=288,
-                width=240,
-                color="FFFFFF",  # Pure white
-                hd=True,
-                kb=None,
-                render=0,
-                dpi=300,
-                face_align=False,
-                matting_model=matting_model,
-                face_detect_model="retinaface-resnet50",
+            # Run the image processing in a separate thread with a timeout
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                thread_pool,
+                lambda: run(
+                    input_image_path=temp_input,
+                    output_image_path=temp_output,
+                    type="add_background",
+                    height=288,
+                    width=240,
+                    color="FFFFFF",  # Pure white
+                    hd=True,
+                    kb=None,
+                    render=0,
+                    dpi=300,
+                    face_align=False,
+                    matting_model=matting_model,
+                    face_detect_model="retinaface-resnet50",
+                )
             )
+            
+            # Force garbage collection
+            gc.collect()
+            log_memory_usage()
+            
         except Exception as processing_error:
             logging.error(f"Error during image processing: {str(processing_error)}")
             logging.error("Full traceback:")
@@ -164,6 +188,10 @@ async def process_image(file: UploadFile = File(...)):
             os.remove(temp_output)
         except Exception as cleanup_error:
             logging.warning(f"Warning: Error during cleanup: {str(cleanup_error)}")
+        
+        # Force garbage collection
+        gc.collect()
+        log_memory_usage()
         
         logging.info("Returning response...")
         # Return the processed image
