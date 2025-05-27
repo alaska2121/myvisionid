@@ -9,8 +9,10 @@ import logging
 from datetime import datetime
 import gc
 import asyncio
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 import psutil
+import signal
+from contextlib import contextmanager
 
 # Set up logging
 log_dir = "logs"
@@ -72,6 +74,21 @@ def log_memory_usage():
     memory_info = process.memory_info()
     logging.info(f"Memory usage: {memory_info.rss / 1024 / 1024:.2f} MB")
 
+@contextmanager
+def timeout(seconds):
+    def signal_handler(signum, frame):
+        raise TimeoutError(f"Operation timed out after {seconds} seconds")
+    
+    # Register the signal handler
+    signal.signal(signal.SIGALRM, signal_handler)
+    signal.alarm(seconds)
+    
+    try:
+        yield
+    finally:
+        # Disable the alarm
+        signal.alarm(0)
+
 @app.get("/process-image")
 async def process_image_get():
     """
@@ -126,29 +143,40 @@ async def process_image(file: UploadFile = File(...)):
         try:
             # Run the image processing in a separate thread with a timeout
             loop = asyncio.get_event_loop()
-            result = await loop.run_in_executor(
-                thread_pool,
-                lambda: run(
-                    input_image_path=temp_input,
-                    output_image_path=temp_output,
-                    type="add_background",
-                    height=288,
-                    width=240,
-                    color="FFFFFF",  # Pure white
-                    hd=True,
-                    kb=None,
-                    render=0,
-                    dpi=300,
-                    face_align=False,
-                    matting_model=matting_model,
-                    face_detect_model="retinaface-resnet50",
+            with timeout(30):  # 30 second timeout
+                result = await loop.run_in_executor(
+                    thread_pool,
+                    lambda: run(
+                        input_image_path=temp_input,
+                        output_image_path=temp_output,
+                        type="add_background",
+                        height=288,
+                        width=240,
+                        color="FFFFFF",  # Pure white
+                        hd=True,
+                        kb=None,
+                        render=0,
+                        dpi=300,
+                        face_align=False,
+                        matting_model=matting_model,
+                        face_detect_model="retinaface-resnet50",
+                    )
                 )
-            )
             
             # Force garbage collection
             gc.collect()
             log_memory_usage()
             
+        except TimeoutError as timeout_error:
+            logging.error(f"Image processing timed out after 30 seconds")
+            return JSONResponse(
+                status_code=504,
+                content={
+                    "status": "error",
+                    "message": "Image processing timed out. Please try again with a smaller image or contact support if the issue persists.",
+                    "type": "TimeoutError"
+                }
+            )
         except Exception as processing_error:
             logging.error(f"Error during image processing: {str(processing_error)}")
             logging.error("Full traceback:")

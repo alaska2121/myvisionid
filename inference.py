@@ -90,6 +90,15 @@ def run(
         logging.info(f"Input image shape: {input_image.shape}")
         log_memory_usage()
 
+        # Resize large images to prevent memory issues
+        max_dimension = 1024
+        if max(input_image.shape[:2]) > max_dimension:
+            scale = max_dimension / max(input_image.shape[:2])
+            new_size = (int(input_image.shape[1] * scale), int(input_image.shape[0] * scale))
+            logging.info(f"Resizing large image from {input_image.shape[:2]} to {new_size}")
+            input_image = cv2.resize(input_image, new_size, interpolation=cv2.INTER_AREA)
+            log_memory_usage()
+
         size = (int(height), int(width))
         logging.info(f"Target size: {size}")
 
@@ -123,10 +132,24 @@ def run(
             logging.info("Performing human matting...")
             log_memory_usage()
             try:
+                # Clear any cached memory
+                gc.collect()
+                
+                # Perform matting with error handling
                 result = creator(input_image, change_bg_only=True)
+                if result is None:
+                    raise ValueError("Matting process returned None")
+                    
                 matted_image = result.hd  # Use HD matted output (RGBA)
+                if matted_image is None:
+                    raise ValueError("Matted image is None")
+                    
                 logging.info(f"Matted image shape: {matted_image.shape}")
                 log_memory_usage()
+                
+                # Clear memory after matting
+                gc.collect()
+                
             except Exception as matting_error:
                 logging.error(f"Error during human matting: {str(matting_error)}")
                 logging.error("Full traceback:")
@@ -138,9 +161,16 @@ def run(
                 result_image = add_background(
                     matted_image, bgr=bgr_color, mode=render_choice[render]
                 )
+                if result_image is None:
+                    raise ValueError("Background application returned None")
+                    
                 result_image = result_image.astype(np.uint8)
                 logging.info(f"Result image shape: {result_image.shape}")
                 log_memory_usage()
+                
+                # Clear memory after background application
+                gc.collect()
+                
             except Exception as bg_error:
                 logging.error(f"Error applying background: {str(bg_error)}")
                 logging.error("Full traceback:")
