@@ -8,7 +8,7 @@ from fastapi.responses import Response, JSONResponse
 import traceback
 import psutil
 import aiofiles
-from typing import Dict, Optional
+from typing import Dict, Optional, Any
 from dataclasses import dataclass
 from datetime import datetime
 import time
@@ -35,19 +35,21 @@ class ImageProcessor:
         # Use number of CPU cores for max_workers, but leave one core free for system
         cpu_count = max(1, psutil.cpu_count() - 1)
         self.thread_pool = ThreadPoolExecutor(max_workers=cpu_count)
-        self.processing_queue = asyncio.Queue(maxsize=50)  # Reduced queue size
+        self.processing_queue = asyncio.Queue(maxsize=25)  # Reduced queue size
         self.active_requests: Dict[str, ProcessingRequest] = {}
         self.active_workers = 0  # Track number of active workers
-        self.max_workers = min(cpu_count, 2)  # Limit to 2 workers
-        self.memory_threshold = 0.7  # 70% memory threshold
-        self.critical_memory_threshold = 0.85  # 85% critical threshold
+        self.max_workers = 1  # Limit to 1 worker for Railway 8GB plan
+        self.memory_threshold = 0.6  # 60% memory threshold
+        self.critical_memory_threshold = 0.75  # 75% critical threshold
+        self.max_memory_mb = 7000  # 7GB max (leaving 1GB buffer)
         self.last_cleanup_time = time.time()
-        self.cleanup_interval = 5  # Cleanup every 5 seconds
+        self.cleanup_interval = 3  # Cleanup every 3 seconds
         
         # Create temp directory if it doesn't exist
         os.makedirs("temp", exist_ok=True)
         
         logging.info(f"Initialized ImageProcessor with {self.max_workers} workers")
+        logging.info(f"Memory limits: {self.max_memory_mb}MB max, {self.memory_threshold*100}% threshold, {self.critical_memory_threshold*100}% critical")
         
         # Start the queue processor
         asyncio.create_task(self._process_queue())
@@ -57,12 +59,15 @@ class ImageProcessor:
     def _get_memory_info(self) -> dict:
         """Get detailed memory information."""
         memory = psutil.virtual_memory()
+        process = psutil.Process()
+        process_memory = process.memory_info().rss / (1024 * 1024)  # Process memory in MB
         return {
             'total': memory.total / (1024 * 1024),  # Convert to MB
             'available': memory.available / (1024 * 1024),
             'used': memory.used / (1024 * 1024),
             'percent': memory.percent,
-            'available_percent': (memory.available / memory.total) * 100
+            'available_percent': (memory.available / memory.total) * 100,
+            'process_memory': process_memory
         }
     
     def _log_memory_state(self, context: str):
@@ -72,6 +77,7 @@ class ImageProcessor:
         logging.info(f"- Total: {mem_info['total']:.2f} MB")
         logging.info(f"- Available: {mem_info['available']:.2f} MB ({mem_info['available_percent']:.2f}%)")
         logging.info(f"- Used: {mem_info['used']:.2f} MB ({mem_info['percent']}%)")
+        logging.info(f"- Process memory: {mem_info['process_memory']:.2f} MB")
         logging.info(f"- Active workers: {self.active_workers}/{self.max_workers}")
         logging.info(f"- Queue size: {self.processing_queue.qsize()}/{self.processing_queue.maxsize}")
     
@@ -110,93 +116,101 @@ class ImageProcessor:
         except Exception as e:
             logging.error(f"Error in force cleanup: {str(e)}")
     
-    def _get_available_memory_percent(self) -> float:
-        """Get available memory as a percentage."""
-        memory = psutil.virtual_memory()
-        return memory.available / memory.total
-    
     def _should_start_new_worker(self) -> bool:
         """Check if we should start a new worker based on memory usage."""
-        available_memory = self._get_available_memory_percent()
-        should_start = available_memory > (1 - self.memory_threshold)
+        mem_info = self._get_memory_info()
+        available_memory = mem_info['available_percent'] / 100
+        process_memory = mem_info['process_memory']
+        
+        # Check both percentage and absolute memory
+        should_start = (
+            available_memory > (1 - self.memory_threshold) and
+            process_memory < self.max_memory_mb
+        )
+        
         if not should_start:
             self._log_memory_state("Worker start check failed")
+            logging.warning(f"Memory check failed: available={available_memory:.2%}, process={process_memory:.0f}MB")
+        
         return should_start
     
     def _is_memory_critical(self) -> bool:
         """Check if memory usage is at critical levels."""
-        available_memory = self._get_available_memory_percent()
-        is_critical = available_memory < (1 - self.critical_memory_threshold)
+        mem_info = self._get_memory_info()
+        available_memory = mem_info['available_percent'] / 100
+        process_memory = mem_info['process_memory']
+        
+        # Check both percentage and absolute memory
+        is_critical = (
+            available_memory < (1 - self.critical_memory_threshold) or
+            process_memory > self.max_memory_mb
+        )
+        
         if is_critical:
             self._log_memory_state("Critical memory detected")
+            logging.warning(f"Critical memory: available={available_memory:.2%}, process={process_memory:.0f}MB")
+        
         return is_critical
     
     async def _process_queue(self):
-        """Process queued requests using multiple workers."""
+        """Process the queue of requests."""
         while True:
             try:
-                # Check if memory is critical
+                # Check memory before processing next request
                 if self._is_memory_critical():
-                    logging.warning("Critical memory usage detected, pausing queue processing")
-                    self._force_cleanup()  # Try to free up memory
+                    logging.warning("Memory critical, waiting before processing next request")
                     await asyncio.sleep(5)  # Wait longer when memory is critical
+                    self._force_cleanup()
                     continue
                 
-                # Check if we can start more workers
-                while (self.active_workers < self.max_workers and 
-                       not self.processing_queue.empty() and 
-                       self._should_start_new_worker()):
-                    request = await self.processing_queue.get()
-                    self.active_workers += 1
-                    logging.info(f"Starting worker {self.active_workers} for request {request.request_id}")
-                    self._log_memory_state(f"Starting worker {self.active_workers}")
-                    
-                    # Process request in background
-                    asyncio.create_task(self._process_with_worker(request))
+                request = await self.processing_queue.get()
                 
-                await asyncio.sleep(0.1)  # Prevent CPU spinning
+                if self.active_workers >= self.max_workers:
+                    logging.warning("Max workers reached, waiting")
+                    await asyncio.sleep(1)
+                    continue
+                
+                if not self._should_start_new_worker():
+                    logging.warning("Memory too high for new worker, waiting")
+                    await asyncio.sleep(2)
+                    continue
+                
+                asyncio.create_task(self._process_with_worker(request))
+                
             except Exception as e:
                 logging.error(f"Error in queue processor: {str(e)}")
-                logging.error(traceback.format_exc())
-                await asyncio.sleep(1)  # Wait before retrying
+                await asyncio.sleep(1)
     
     async def _process_with_worker(self, request: ProcessingRequest):
-        """Process a single request using a worker."""
+        """Process a request with a worker."""
         try:
-            # Check memory before processing
+            self.active_workers += 1
+            self._log_memory_state("Before processing")
+            
+            # Check memory before starting
             if self._is_memory_critical():
-                logging.warning(f"Critical memory detected, rejecting request {request.request_id}")
-                self._force_cleanup()  # Try to free up memory
-                if self._is_memory_critical():  # Check again after cleanup
-                    request.result = JSONResponse(
-                        status_code=503,
-                        content={
-                            "status": "error",
-                            "message": "Server is currently under heavy load. Please try again in a few moments.",
-                            "type": "ServiceUnavailable"
-                        }
-                    )
-                    return
+                raise Exception("Memory usage too high to process request")
             
-            if not self._should_start_new_worker():
-                logging.warning(f"Low memory detected, delaying request {request.request_id}")
-                self._force_cleanup()  # Try to free up memory
-                await asyncio.sleep(2)  # Wait longer for memory to free up
-                if not self._should_start_new_worker():
-                    request.result = JSONResponse(
-                        status_code=503,
-                        content={
-                            "status": "error",
-                            "message": "Server is currently under heavy load. Please try again in a few moments.",
-                            "type": "ServiceUnavailable"
-                        }
-                    )
-                    return
+            # Process the request
+            result = await self.thread_pool.submit(
+                self._process_image,
+                request.temp_input,
+                request.temp_output,
+                "add_background",
+                request.height,
+                request.width
+            )
             
-            result = await self._process_single_request(request)
+            # Check memory after processing
+            if self._is_memory_critical():
+                self._force_cleanup()
+                if self._is_memory_critical():
+                    raise Exception("Memory usage too high after processing")
+            
             request.result = result
+            
         except Exception as e:
-            logging.error(f"Error in worker processing request {request.request_id}: {str(e)}")
+            logging.error(f"Error processing request: {str(e)}")
             request.result = JSONResponse(
                 status_code=500,
                 content={
@@ -205,12 +219,15 @@ class ImageProcessor:
                     "type": type(e).__name__
                 }
             )
+            # Force cleanup on error
+            self._force_cleanup()
+            
         finally:
             self.active_workers -= 1
             self.processing_queue.task_done()
             if request.request_id in self.active_requests:
                 del self.active_requests[request.request_id]
-            # Force cleanup after each request
+            # Always cleanup after processing
             self._force_cleanup()
     
     async def _process_single_request(self, request: ProcessingRequest):

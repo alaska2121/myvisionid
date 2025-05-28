@@ -339,28 +339,51 @@ def get_birefnet_portrait_matting(input_image, checkpoint_path, ref_size=1024):
     input_name = sess.get_inputs()[0].name
     logging.info(f"Model input name: {input_name}")
     
-    def transform_image(image):
-        # Resize to 1024x1024 as required by the model
-        image = cv2.resize(image, (1024, 1024))
-        # Normalize to [0, 1]
-        image = image.astype(np.float32) / 255.0
-        # Change from (H, W, C) to (C, H, W)
-        image = np.transpose(image, (2, 0, 1))
-        # Add batch dimension
-        image = np.expand_dims(image, 0)
-        return image
+    try:
+        def transform_image(image):
+            # Resize to 1024x1024 as required by the model
+            image = cv2.resize(image, (1024, 1024))
+            # Normalize to [0, 1]
+            image = image.astype(np.float32) / 255.0
+            # Change from (H, W, C) to (C, H, W)
+            image = np.transpose(image, (2, 0, 1))
+            # Add batch dimension
+            image = np.expand_dims(image, 0)
+            return image
 
-    # Process image
-    image = transform_image(input_image)
-    
-    # Use the correct input name from the model
-    outputs = sess.run(None, {input_name: image})
-    alpha = outputs[0][0]
-    alpha = np.transpose(alpha, (1, 2, 0))
-    alpha = cv2.resize(alpha, (input_image.shape[1], input_image.shape[0]))
-    alpha = np.clip(alpha * 255, 0, 255).astype(np.uint8)
+        # Process image
+        image = transform_image(input_image)
+        
+        # Use the correct input name from the model
+        outputs = sess.run(None, {input_name: image})
+        
+        # Process outputs and create alpha mask
+        alpha = outputs[0][0]
+        alpha = np.transpose(alpha, (1, 2, 0))
+        alpha = cv2.resize(alpha, (input_image.shape[1], input_image.shape[0]))
+        alpha = np.clip(alpha * 255, 0, 255).astype(np.uint8)
 
-    # Create RGBA output
-    rgba = cv2.cvtColor(input_image, cv2.COLOR_BGR2BGRA)
-    rgba[:, :, 3] = alpha
-    return rgba
+        # Create RGBA output
+        rgba = cv2.cvtColor(input_image, cv2.COLOR_BGR2BGRA)
+        rgba[:, :, 3] = alpha
+
+        # Clean up intermediate variables
+        del image, outputs, alpha
+        import gc
+        gc.collect()
+
+        return rgba
+
+    except Exception as e:
+        logging.error(f"Error during birefnet matting: {str(e)}")
+        raise
+    finally:
+        # Clean up any remaining variables
+        if 'image' in locals():
+            del image
+        if 'outputs' in locals():
+            del outputs
+        if 'alpha' in locals():
+            del alpha
+        import gc
+        gc.collect()
