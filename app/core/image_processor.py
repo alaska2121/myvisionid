@@ -311,39 +311,37 @@ class ImageProcessor:
         temp_input = f"temp/{request_id}_input.jpg"
         temp_output = f"temp/{request_id}_output.jpg"
         
-        # Create processing request
-        request = ProcessingRequest(
-            file=file,
-            temp_input=temp_input,
-            temp_output=temp_output,
-            start_time=datetime.now(),
-            request_id=request_id
-        )
-        
-        # Check if queue is full
-        if self.processing_queue.full():
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "status": "error",
-                    "message": "Server is busy. Please try again in a few moments.",
-                    "type": "ServiceUnavailable"
-                }
-            )
-        
-        # Add to active requests
-        self.active_requests[request_id] = request
-        
         try:
-            # Add to processing queue
-            await self.processing_queue.put(request)
+            # Create processing request
+            request = ProcessingRequest(
+                file=file,
+                temp_input=temp_input,
+                temp_output=temp_output,
+                start_time=datetime.now(),
+                request_id=request_id
+            )
             
-            # Wait for processing to complete
-            while request_id in self.active_requests:
-                await asyncio.sleep(0.1)
+            # Check if queue is full
+            if self.processing_queue.full():
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "status": "error",
+                        "message": "Server is busy. Please try again in a few moments.",
+                        "type": "ServiceUnavailable"
+                    }
+                )
             
-            # Get the result from _process_single_request
+            # Add to active requests
+            self.active_requests[request_id] = request
+            
+            # Process the request directly instead of using the queue
             result = await self._process_single_request(request)
+            
+            # Clean up
+            if request_id in self.active_requests:
+                del self.active_requests[request_id]
+            
             return result
             
         except Exception as e:
