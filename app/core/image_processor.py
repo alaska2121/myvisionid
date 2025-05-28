@@ -543,12 +543,24 @@ class ImageProcessor:
                 )
         
         # Create temp directory if it doesn't exist
-        os.makedirs("temp", exist_ok=True)
+        temp_dir = "temp"
+        try:
+            os.makedirs(temp_dir, mode=0o755, exist_ok=True)
+            logging.info(f"Ensured temp directory exists: {temp_dir}")
+        except Exception as dir_error:
+            logging.error(f"Failed to create temp directory: {str(dir_error)}")
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "status": "error",
+                    "message": "Failed to create temporary directory."
+                }
+            )
         
         # Generate request ID and temp file paths
         request_id = str(uuid.uuid4())
-        temp_input = f"temp/{request_id}_input.jpg"
-        temp_output = f"temp/{request_id}_output.jpg"
+        temp_input = os.path.join(temp_dir, f"{request_id}_input.jpg")
+        temp_output = os.path.join(temp_dir, f"{request_id}_output.jpg")
         
         # Create processing request
         request = ProcessingRequest(
@@ -575,6 +587,31 @@ class ImageProcessor:
         self.active_requests[request_id] = request
         
         try:
+            # Validate and save the file
+            success, error_response = await self.validate_and_save_file(file, temp_input)
+            if not success:
+                if request_id in self.active_requests:
+                    del self.active_requests[request_id]
+                return error_response
+            
+            # Verify file exists and is readable before adding to queue
+            if not os.path.exists(temp_input):
+                raise FileNotFoundError(f"Input file not found after validation: {temp_input}")
+            
+            if not os.access(temp_input, os.R_OK):
+                raise PermissionError(f"No read permission for input file: {temp_input}")
+            
+            # Verify file is a valid image
+            import cv2
+            test_image = cv2.imread(temp_input)
+            if test_image is None:
+                raise ValueError(f"Failed to read input image with OpenCV: {temp_input}")
+            
+            logging.info(f"Input image verified before queue. Shape: {test_image.shape}")
+            
+            # Ensure file is flushed to disk
+            os.sync()
+            
             # Add to processing queue
             await self.processing_queue.put(request)
             self._log_memory_state(f"Request {request_id} queued")
