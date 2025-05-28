@@ -327,25 +327,52 @@ class ImageProcessor:
                     }
                 )
             
-            # Ensure temp directory exists
-            os.makedirs(os.path.dirname(temp_input), exist_ok=True)
+            # Ensure temp directory exists with proper permissions
+            temp_dir = os.path.dirname(temp_input)
+            try:
+                os.makedirs(temp_dir, mode=0o755, exist_ok=True)
+                logging.info(f"Ensured temp directory exists: {temp_dir}")
+            except Exception as dir_error:
+                logging.error(f"Failed to create temp directory: {str(dir_error)}")
+                return False, JSONResponse(
+                    status_code=500,
+                    content={
+                        "status": "error",
+                        "message": "Failed to create temporary directory."
+                    }
+                )
             
-            # Save file with retries
+            # Save file with retries and verification
             max_retries = 3
             for attempt in range(max_retries):
                 try:
                     logging.info(f"Saving to {temp_input} (attempt {attempt + 1}/{max_retries})")
+                    
+                    # Save file
                     async with aiofiles.open(temp_input, 'wb') as f:
                         await f.write(content)
                     
-                    # Verify file was saved correctly
+                    # Verify file exists
                     if not os.path.exists(temp_input):
                         raise FileNotFoundError(f"File not found after save: {temp_input}")
+                    
+                    # Verify file permissions
+                    if not os.access(temp_input, os.R_OK):
+                        raise PermissionError(f"No read permission for file: {temp_input}")
                     
                     # Verify file size
                     file_size = os.path.getsize(temp_input)
                     if file_size != len(content):
                         raise ValueError(f"File size mismatch: saved={file_size}, original={len(content)}")
+                    
+                    # Verify file is readable
+                    try:
+                        with open(temp_input, 'rb') as f:
+                            test_content = f.read()
+                        if len(test_content) != len(content):
+                            raise ValueError("File content verification failed")
+                    except Exception as read_error:
+                        raise IOError(f"Failed to read saved file: {str(read_error)}")
                     
                     # Verify it's a valid image
                     import cv2
@@ -354,6 +381,7 @@ class ImageProcessor:
                         raise ValueError(f"Failed to read image with OpenCV: {temp_input}")
                     
                     logging.info(f"Image verification successful. Image shape: {test_image.shape}")
+                    logging.info(f"File successfully saved and verified at: {temp_input}")
                     return True, None
                     
                 except Exception as save_error:
@@ -386,8 +414,23 @@ class ImageProcessor:
     async def process_image_with_timeout(self, temp_input: str, temp_output: str) -> tuple[bool, JSONResponse | None]:
         """Process the image with a timeout."""
         try:
+            # Verify input file exists and is readable before processing
+            if not os.path.exists(temp_input):
+                raise FileNotFoundError(f"Input file not found: {temp_input}")
+            
+            if not os.access(temp_input, os.R_OK):
+                raise PermissionError(f"No read permission for input file: {temp_input}")
+            
+            # Verify file is a valid image
+            import cv2
+            test_image = cv2.imread(temp_input)
+            if test_image is None:
+                raise ValueError(f"Failed to read input image with OpenCV: {temp_input}")
+            
+            logging.info(f"Input image verified. Shape: {test_image.shape}")
+            
             loop = asyncio.get_event_loop()
-            with timeout(50):  # 30 second timeout
+            with timeout(50):  # 50 second timeout
                 result = await loop.run_in_executor(
                     self.thread_pool,
                     lambda: run(
@@ -408,7 +451,7 @@ class ImageProcessor:
                 )
             return True, None
         except TimeoutError:
-            logging.error("Image processing timed out after 30 seconds")
+            logging.error("Image processing timed out after 50 seconds")
             return False, JSONResponse(
                 status_code=504,
                 content={
