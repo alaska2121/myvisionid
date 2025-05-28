@@ -27,38 +27,77 @@ class ProcessingRequest:
     result_future: asyncio.Future
 
 class ImageProcessor:
-    """Main class for processing images with proper queue management."""
+    """Main class for processing images with configurable concurrent processing."""
     
-    def __init__(self, config: Config):
+    def __init__(self, config: Config, max_concurrent_workers: int = 2):
         self.config = config
-        # Use only 1 worker to prevent concurrent processing that causes memory issues
-        self.thread_pool = ThreadPoolExecutor(max_workers=1)
-        self.processing_queue = asyncio.Queue(maxsize=50)  # Limit queue size
+        self.max_concurrent_workers = max_concurrent_workers
+        
+        # Use configurable workers, but cap at 3 to prevent memory issues
+        workers = min(max_concurrent_workers, 3)
+        self.thread_pool = ThreadPoolExecutor(max_workers=workers)
+        
+        # Semaphore to control concurrent processing
+        self.processing_semaphore = asyncio.Semaphore(workers)
+        
+        # Queue for requests
+        self.processing_queue = asyncio.Queue(maxsize=50)
         self.active_requests: Dict[str, ProcessingRequest] = {}
+        
+        # Memory monitoring from config
+        self.memory_threshold_mb = config.memory_threshold_mb
         
         # Create temp directory if it doesn't exist
         os.makedirs("temp", exist_ok=True)
         
-        logging.info(f"Initialized ImageProcessor with 1 worker for sequential processing")
+        logging.info(f"Initialized ImageProcessor with {workers} concurrent workers")
+        logging.info(f"Memory threshold: {self.memory_threshold_mb}MB")
+        logging.info(f"Max file size: {config.max_file_size_mb}MB")
         
-        # Start the queue processor
-        asyncio.create_task(self._process_queue())
+        # Start multiple queue processors for concurrent processing
+        for i in range(workers):
+            asyncio.create_task(self._process_queue(worker_id=i))
     
-    async def _process_queue(self):
-        """Process queued requests sequentially."""
-        logging.info("Starting queue processor...")
+    def _check_memory_usage(self) -> bool:
+        """Check if memory usage is within acceptable limits."""
+        try:
+            process = psutil.Process()
+            memory_mb = process.memory_info().rss / 1024 / 1024
+            
+            if memory_mb > self.memory_threshold_mb:
+                logging.warning(f"Memory usage too high: {memory_mb:.1f}MB > {self.memory_threshold_mb}MB")
+                return False
+            return True
+        except Exception as e:
+            logging.error(f"Error checking memory usage: {str(e)}")
+            return True  # Assume OK if we can't check
+    
+    async def _process_queue(self, worker_id: int = 0):
+        """Process queued requests with concurrent processing."""
+        logging.info(f"Starting queue processor worker {worker_id}...")
         while True:
             try:
                 # Get request from queue (this blocks until a request is available)
                 request = await self.processing_queue.get()
-                logging.info(f"Processing queued request {request.request_id}")
+                
+                # Check memory before processing
+                if not self._check_memory_usage():
+                    # If memory is too high, requeue the request and wait
+                    await self.processing_queue.put(request)
+                    await asyncio.sleep(2)  # Wait before retrying
+                    continue
+                
+                logging.info(f"Worker {worker_id} processing request {request.request_id}")
                 
                 try:
-                    # Process the request
-                    result = await self._process_single_request(request)
-                    # Set the result in the future
-                    if not request.result_future.done():
-                        request.result_future.set_result(result)
+                    # Acquire semaphore for concurrent processing control
+                    async with self.processing_semaphore:
+                        # Process the request
+                        result = await self._process_single_request(request)
+                        # Set the result in the future
+                        if not request.result_future.done():
+                            request.result_future.set_result(result)
+                            
                 except Exception as e:
                     # Set the exception in the future
                     if not request.result_future.done():
@@ -74,7 +113,7 @@ class ImageProcessor:
                     force_garbage_collection()
                     
             except Exception as e:
-                logging.error(f"Error in queue processor: {str(e)}")
+                logging.error(f"Error in queue processor worker {worker_id}: {str(e)}")
                 logging.error(traceback.format_exc())
                 await asyncio.sleep(1)  # Wait before retrying
     
@@ -146,13 +185,14 @@ class ImageProcessor:
             content = await file.read()
             logging.info(f"File size: {len(content)} bytes")
             
-            if len(content) > 2 * 1024 * 1024:  # 2MB limit
-                logging.warning(f"File too large: {len(content)} bytes")
+            max_size_bytes = self.config.max_file_size_mb * 1024 * 1024
+            if len(content) > max_size_bytes:
+                logging.warning(f"File too large: {len(content)} bytes > {max_size_bytes} bytes")
                 return False, JSONResponse(
                     status_code=400,
                     content={
                         "status": "error",
-                        "message": "File too large. Maximum size is 2MB."
+                        "message": f"File too large. Maximum size is {self.config.max_file_size_mb}MB."
                     }
                 )
             

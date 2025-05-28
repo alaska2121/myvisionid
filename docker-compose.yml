@@ -51,6 +51,37 @@ services:
       - PYTHONUNBUFFERED=1
       - OMP_NUM_THREADS=2
       - MKL_NUM_THREADS=2
+      - MAX_CONCURRENT_WORKERS=2
+      - MEMORY_THRESHOLD_MB=1500
+      - MAX_FILE_SIZE_MB=2
+    volumes:
+      - ./logs:/app/logs
+      - ./temp:/app/temp
+
+  # High-performance variant for more powerful systems
+  myvisionid_api_hp:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: linzeyi/hivision_idphotos
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8001 --workers 1
+    ports:
+      - '8001:8001'
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2.0'
+        reservations:
+          memory: 2G
+          cpus: '1.0'
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OMP_NUM_THREADS=4
+      - MKL_NUM_THREADS=4
+      - MAX_CONCURRENT_WORKERS=3
+      - MEMORY_THRESHOLD_MB=3000
+      - MAX_FILE_SIZE_MB=5
     volumes:
       - ./logs:/app/logs
       - ./temp:/app/temp

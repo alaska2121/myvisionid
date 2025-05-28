@@ -9,6 +9,17 @@ class Config:
     def __init__(self):
         self._setup_logging()
         self._setup_model_paths()
+        self.matting_model = os.getenv("MATTING_MODEL", "birefnet-v1-lite")
+        self.face_detect_model = os.getenv("FACE_DETECT_MODEL", "retinaface-resnet50")
+        self.max_concurrent_workers = int(os.getenv("MAX_CONCURRENT_WORKERS", "2"))
+        self.memory_threshold_mb = int(os.getenv("MEMORY_THRESHOLD_MB", "1500"))
+        self.max_file_size_mb = int(os.getenv("MAX_FILE_SIZE_MB", "2"))
+        
+        # Validate configuration
+        if self.max_concurrent_workers < 1:
+            self.max_concurrent_workers = 1
+        if self.max_concurrent_workers > 3:
+            self.max_concurrent_workers = 3  # Cap to prevent memory issues
     
     def _get_log_file_path(self) -> str:
         """Get the path for the log file."""

@@ -7,7 +7,7 @@ from typing import Dict
 import logging
 
 class RateLimiter:
-    def __init__(self, requests_per_minute: int = 20, process_image_per_minute: int = 5):
+    def __init__(self, requests_per_minute: int = 60, process_image_per_minute: int = 20):
         self.requests_per_minute = requests_per_minute
         self.process_image_per_minute = process_image_per_minute
         self.requests: Dict[str, list] = defaultdict(list)
@@ -31,7 +31,7 @@ class RateLimiter:
                 
                 # Check if process-image rate limit is exceeded
                 if len(self.process_image_requests[client_ip]) >= self.process_image_per_minute:
-                    logging.warning(f"Rate limit exceeded for /process-image from {client_ip}")
+                    logging.warning(f"Rate limit exceeded for /process-image from {client_ip}: {len(self.process_image_requests[client_ip])}/{self.process_image_per_minute}")
                     return False
                     
                 # Add new process-image request
@@ -45,6 +45,7 @@ class RateLimiter:
             
             # Check if general rate limit is exceeded
             if len(self.requests[client_ip]) >= self.requests_per_minute:
+                logging.warning(f"General rate limit exceeded from {client_ip}: {len(self.requests[client_ip])}/{self.requests_per_minute}")
                 return False
                 
             # Add new request
