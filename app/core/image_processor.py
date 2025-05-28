@@ -408,6 +408,15 @@ class ImageProcessor:
                     if not os.path.exists(temp_input):
                         raise FileNotFoundError("File disappeared after verification")
                     
+                    # Verify file is still readable after all operations
+                    try:
+                        with open(temp_input, 'rb') as f:
+                            final_test = f.read()
+                        if len(final_test) != len(content):
+                            raise ValueError("Final file content verification failed")
+                    except Exception as final_error:
+                        raise IOError(f"Final file verification failed: {str(final_error)}")
+                    
                     return True, None
                     
                 except Exception as save_error:
@@ -457,6 +466,15 @@ class ImageProcessor:
             
             # Ensure file is flushed to disk
             os.sync()
+            
+            # Verify file is still readable after all checks
+            try:
+                with open(temp_input, 'rb') as f:
+                    final_test = f.read()
+                if len(final_test) == 0:
+                    raise ValueError("File is empty after verification")
+            except Exception as final_error:
+                raise IOError(f"Final file verification failed: {str(final_error)}")
             
             loop = asyncio.get_event_loop()
             with timeout(50):  # 50 second timeout
