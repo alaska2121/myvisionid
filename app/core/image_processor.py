@@ -119,23 +119,103 @@ class ImageProcessor:
 
     async def validate_and_save_file(self, file: UploadFile, temp_input: str) -> tuple[bool, JSONResponse | None]:
         """Validate and save the uploaded file."""
-        content = await file.read()
-        logging.info(f"File size: {len(content)} bytes")
-        
-        if len(content) > 2 * 1024 * 1024:  # 2MB limit
-            logging.warning(f"File too large: {len(content)} bytes")
+        try:
+            content = await file.read()
+            logging.info(f"File size: {len(content)} bytes")
+            
+            if len(content) > 2 * 1024 * 1024:  # 2MB limit
+                logging.warning(f"File too large: {len(content)} bytes")
+                return False, JSONResponse(
+                    status_code=400,
+                    content={
+                        "status": "error",
+                        "message": "File too large. Maximum size is 2MB."
+                    }
+                )
+            
+            if len(content) == 0:
+                logging.warning("Empty file received")
+                return False, JSONResponse(
+                    status_code=400,
+                    content={
+                        "status": "error",
+                        "message": "Empty file received."
+                    }
+                )
+            
+            # Ensure temp directory exists
+            os.makedirs(os.path.dirname(temp_input), exist_ok=True)
+            
+            logging.info(f"Saving to {temp_input}")
+            async with aiofiles.open(temp_input, 'wb') as f:
+                await f.write(content)
+            
+            # Verify file was saved correctly
+            if not os.path.exists(temp_input):
+                logging.error(f"Failed to save file to {temp_input}")
+                return False, JSONResponse(
+                    status_code=500,
+                    content={
+                        "status": "error",
+                        "message": "Failed to save uploaded file."
+                    }
+                )
+            
+            # Verify file is readable and is a valid image
+            try:
+                # First check file size
+                with open(temp_input, 'rb') as f:
+                    test_content = f.read()
+                if len(test_content) != len(content):
+                    logging.error(f"File size mismatch: saved={len(test_content)}, original={len(content)}")
+                    return False, JSONResponse(
+                        status_code=500,
+                        content={
+                            "status": "error",
+                            "message": "File verification failed."
+                        }
+                    )
+                
+                # Then verify it's a valid image
+                import cv2
+                test_image = cv2.imread(temp_input)
+                if test_image is None:
+                    logging.error(f"Failed to read image with OpenCV: {temp_input}")
+                    return False, JSONResponse(
+                        status_code=400,
+                        content={
+                            "status": "error",
+                            "message": "Invalid image file. Please ensure the file is a valid image format (JPEG, PNG)."
+                        }
+                    )
+                
+                logging.info(f"Image verification successful. Image shape: {test_image.shape}")
+                
+            except Exception as verify_error:
+                logging.error(f"Error verifying saved file: {str(verify_error)}")
+                return False, JSONResponse(
+                    status_code=500,
+                    content={
+                        "status": "error",
+                        "message": "Failed to verify saved file."
+                    }
+                )
+            
+            logging.info("File saved and verified successfully")
+            return True, None
+            
+        except Exception as e:
+            logging.error(f"Error in validate_and_save_file: {str(e)}")
+            logging.error("Full traceback:")
+            logging.error(traceback.format_exc())
             return False, JSONResponse(
-                status_code=400,
+                status_code=500,
                 content={
                     "status": "error",
-                    "message": "File too large. Maximum size is 2MB."
+                    "message": f"Error saving file: {str(e)}",
+                    "type": type(e).__name__
                 }
             )
-        
-        logging.info(f"Saving to {temp_input}")
-        async with aiofiles.open(temp_input, 'wb') as f:
-            await f.write(content)
-        return True, None
 
     async def process_image_with_timeout(self, temp_input: str, temp_output: str) -> tuple[bool, JSONResponse | None]:
         """Process the image with a timeout."""
