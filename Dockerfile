@@ -1,46 +1,51 @@
 FROM python:3.10-slim
 
-WORKDIR /app
+# Set environment variables for better memory management
+ENV PYTHONUNBUFFERED=1
+ENV PYTHONIOENCODING=utf-8
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# Railway-specific optimizations
+ENV OMP_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
+ENV NUMEXPR_NUM_THREADS=1
+ENV OPENBLAS_NUM_THREADS=1
 
 # Install system dependencies
 RUN apt-get update && apt-get install -y \
     libgl1-mesa-glx \
     libglib2.0-0 \
-    curl \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    libglib2.0-0 \
+    wget \
     && rm -rf /var/lib/apt/lists/*
 
-# Upgrade pip
-RUN pip install --upgrade pip
+WORKDIR /app
 
-# Copy requirements first to leverage Docker cache
-COPY requirements.txt ./
+# Copy requirements and install Python dependencies
+COPY requirements*.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Create necessary directories
-RUN mkdir -p retinaface/
-RUN mkdir -p modnet_photographic_portrait_matting/
-RUN mkdir -p hivision/creator/weights/
-
-# Download model files during build
-RUN set -x && \
-    curl -v -L \
-         "https://huggingface.co/akhaliq/RetinaFace-R50/resolve/main/RetinaFace-R50.pth" \
-         -o retinaface/RetinaFace-R50.pth && \
-    curl -v -L \
-         "https://huggingface.co/yao123/test/resolve/main/modnet_photographic_portrait_matting.ckpt" \
-         -o modnet_photographic_portrait_matting/modnet_photographic_portrait_matting.ckpt && \
-    curl -v -L \
-         "https://huggingface.co/TheEeeeLin/HivisionIDPhotos_matting/resolve/45df3ded47167a551b8b17b61af4fb6e324051da/birefnet-v1-lite.onnx" \
-         -o hivision/creator/weights/birefnet-v1-lite.onnx
-
-# Copy the rest of the application
+# Copy application code
 COPY . .
 
-# Create temp directory
-RUN mkdir -p temp
+# Make scripts executable
+RUN chmod +x scripts/railway_start.sh
 
-# Expose the port
+# Create necessary directories
+RUN mkdir -p temp logs
+
+# Set Railway environment variable
+ENV RAILWAY_ENVIRONMENT=true
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
+    CMD python -c "import requests; requests.get('http://localhost:8000/health', timeout=5)"
+
 EXPOSE 8000
 
-# Command to run the application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Use Railway startup script
+CMD ["./scripts/railway_start.sh"]

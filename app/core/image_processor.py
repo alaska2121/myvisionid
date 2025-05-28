@@ -64,9 +64,28 @@ class ImageProcessor:
             process = psutil.Process()
             memory_mb = process.memory_info().rss / 1024 / 1024
             
-            if memory_mb > self.memory_threshold_mb:
-                logging.warning(f"Memory usage too high: {memory_mb:.1f}MB > {self.memory_threshold_mb}MB")
-                return False
+            # More aggressive memory checking for Railway
+            is_railway = os.getenv("RAILWAY_ENVIRONMENT") is not None
+            threshold = self.memory_threshold_mb
+            
+            if is_railway:
+                # Even more strict on Railway
+                threshold = min(threshold, 500)
+            
+            if memory_mb > threshold:
+                logging.warning(f"Memory usage too high: {memory_mb:.1f}MB > {threshold}MB (Railway: {is_railway})")
+                
+                # Force garbage collection immediately
+                force_garbage_collection()
+                
+                # Check again after cleanup
+                memory_mb_after = process.memory_info().rss / 1024 / 1024
+                if memory_mb_after > threshold:
+                    logging.warning(f"Memory still high after cleanup: {memory_mb_after:.1f}MB > {threshold}MB")
+                    return False
+                else:
+                    logging.info(f"Memory cleaned up: {memory_mb:.1f}MB -> {memory_mb_after:.1f}MB")
+            
             return True
         except Exception as e:
             logging.error(f"Error checking memory usage: {str(e)}")
@@ -283,8 +302,12 @@ class ImageProcessor:
     async def process_image_with_timeout(self, temp_input: str, temp_output: str) -> tuple[bool, JSONResponse | None]:
         """Process the image with a timeout."""
         try:
+            # Shorter timeout for Railway
+            is_railway = os.getenv("RAILWAY_ENVIRONMENT") is not None
+            timeout_seconds = 35 if is_railway else 50
+            
             loop = asyncio.get_event_loop()
-            with timeout(50):  # 30 second timeout
+            with timeout(timeout_seconds):
                 result = await loop.run_in_executor(
                     self.thread_pool,
                     lambda: run(
@@ -305,16 +328,18 @@ class ImageProcessor:
                 )
             return True, None
         except TimeoutError:
-            logging.error("Image processing timed out after 30 seconds")
+            logging.error(f"Image processing timed out after {timeout_seconds} seconds (Railway: {is_railway})")
             return False, JSONResponse(
                 status_code=504,
                 content={
                     "status": "error",
-                    "message": "Image processing timed out. Please try again with a smaller image or contact support if the issue persists.",
-                    "type": "TimeoutError"
+                    "message": f"Image processing timed out after {timeout_seconds} seconds. Please try again with a smaller image.",
+                    "type": "TimeoutError",
+                    "environment": "railway" if is_railway else "other"
                 }
             )
         except Exception as processing_error:
+            is_railway = os.getenv("RAILWAY_ENVIRONMENT") is not None
             logging.error(f"Error during image processing: {str(processing_error)}")
             logging.error("Full traceback:")
             logging.error(traceback.format_exc())
@@ -323,7 +348,8 @@ class ImageProcessor:
                 content={
                     "status": "error",
                     "message": f"Error during image processing: {str(processing_error)}",
-                    "type": type(processing_error).__name__
+                    "type": type(processing_error).__name__,
+                    "environment": "railway" if is_railway else "other"
                 }
             )
 

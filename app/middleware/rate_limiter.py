@@ -1,6 +1,7 @@
 from fastapi import Request, HTTPException
 from fastapi.responses import JSONResponse
 import time
+import os
 from collections import defaultdict
 import asyncio
 from typing import Dict
@@ -8,11 +9,23 @@ import logging
 
 class RateLimiter:
     def __init__(self, requests_per_minute: int = 60, process_image_per_minute: int = 20):
-        self.requests_per_minute = requests_per_minute
-        self.process_image_per_minute = process_image_per_minute
+        # Detect Railway environment and adjust limits
+        is_railway = os.getenv("RAILWAY_ENVIRONMENT") is not None
+        
+        if is_railway:
+            # Much more restrictive limits for Railway
+            self.requests_per_minute = min(requests_per_minute, 30)
+            self.process_image_per_minute = min(process_image_per_minute, 3)  # Very restrictive
+            logging.info("Railway environment detected - using restrictive rate limits")
+        else:
+            self.requests_per_minute = requests_per_minute
+            self.process_image_per_minute = process_image_per_minute
+        
         self.requests: Dict[str, list] = defaultdict(list)
         self.process_image_requests: Dict[str, list] = defaultdict(list)
         self.lock = asyncio.Lock()
+        
+        logging.info(f"Rate limiter initialized - General: {self.requests_per_minute}/min, Process Image: {self.process_image_per_minute}/min")
         
     async def check_rate_limit(self, request: Request) -> bool:
         client_ip = request.client.host
@@ -56,13 +69,16 @@ rate_limiter = RateLimiter()
 
 async def rate_limit_middleware(request: Request, call_next):
     if not await rate_limiter.check_rate_limit(request):
+        is_railway = os.getenv("RAILWAY_ENVIRONMENT") is not None
         return JSONResponse(
             status_code=429,
             content={
                 "status": "error",
                 "code": 429,
-                "message": "Too many requests. Please try again in a minute.",
-                "request_id": str(time.time())
+                "message": "Too many requests. Please try again in a minute." + 
+                         (" Railway limits are stricter for stability." if is_railway else ""),
+                "request_id": str(time.time()),
+                "environment": "railway" if is_railway else "other"
             }
         )
     

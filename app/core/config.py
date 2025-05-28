@@ -11,15 +11,28 @@ class Config:
         self._setup_model_paths()
         self.matting_model = os.getenv("MATTING_MODEL", "birefnet-v1-lite")
         self.face_detect_model = os.getenv("FACE_DETECT_MODEL", "retinaface-resnet50")
-        self.max_concurrent_workers = int(os.getenv("MAX_CONCURRENT_WORKERS", "2"))
-        self.memory_threshold_mb = int(os.getenv("MEMORY_THRESHOLD_MB", "1500"))
+        
+        # More conservative defaults for cloud deployment
+        self.max_concurrent_workers = int(os.getenv("MAX_CONCURRENT_WORKERS", "1"))  # Default to 1 for Railway
+        self.memory_threshold_mb = int(os.getenv("MEMORY_THRESHOLD_MB", "800"))  # Reduced for Railway
         self.max_file_size_mb = int(os.getenv("MAX_FILE_SIZE_MB", "2"))
+        
+        # Detect if running on Railway
+        self.is_railway = os.getenv("RAILWAY_ENVIRONMENT") is not None
+        
+        if self.is_railway:
+            # Even more conservative settings for Railway
+            self.max_concurrent_workers = min(self.max_concurrent_workers, 1)
+            self.memory_threshold_mb = min(self.memory_threshold_mb, 1200)  # Increased from 600MB to 1200MB for 8GB Railway plan
+            logging.info("Railway environment detected - using conservative settings")
         
         # Validate configuration
         if self.max_concurrent_workers < 1:
             self.max_concurrent_workers = 1
         if self.max_concurrent_workers > 3:
             self.max_concurrent_workers = 3  # Cap to prevent memory issues
+        
+        logging.info(f"Config initialized: workers={self.max_concurrent_workers}, memory_threshold={self.memory_threshold_mb}MB, railway={self.is_railway}")
     
     def _get_log_file_path(self) -> str:
         """Get the path for the log file."""
