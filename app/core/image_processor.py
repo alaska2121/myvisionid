@@ -193,12 +193,20 @@ class ImageProcessor:
             
             # Process the request
             result = await self.thread_pool.submit(
-                self._process_image,
-                request.temp_input,
-                request.temp_output,
-                "add_background",
-                request.height,
-                request.width
+                run,
+                input_image_path=request.temp_input,
+                output_image_path=request.temp_output,
+                type="add_background",
+                height=288,
+                width=240,
+                color="FFFFFF",  # Pure white
+                hd=True,
+                kb=None,
+                render=0,
+                dpi=300,
+                face_align=False,
+                matting_model=self.config.matting_model,
+                face_detect_model="retinaface-resnet50",
             )
             
             # Check memory after processing

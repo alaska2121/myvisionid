@@ -16,6 +16,9 @@ import cv2
 import os
 from time import time
 import logging
+import threading
+import gc
+from collections import OrderedDict
 
 
 WEIGHTS = {
@@ -43,8 +46,10 @@ ONNX_PROVIDER = (
     "CUDAExecutionProvider" if ONNX_DEVICE == "GPU" else "CPUExecutionProvider"
 )
 
-# Model cache dictionary
-MODEL_CACHE = {}
+# Model cache with size limit
+MODEL_CACHE = OrderedDict()
+MAX_CACHED_MODELS = 2
+MODEL_CACHE_LOCK = threading.Lock()
 
 HIVISION_MODNET_SESS = None
 MODNET_PHOTOGRAPHIC_PORTRAIT_MATTING_SESS = None
@@ -54,54 +59,65 @@ BIREFNET_V1_LITE_SESS = None
 
 def load_onnx_model(checkpoint_path, set_cpu=False):
     """
-    Load ONNX model with caching
+    Load ONNX model with caching and memory management
     """
-    # Check if model is already in cache
-    if checkpoint_path in MODEL_CACHE:
-        logging.info(f"Using cached model: {checkpoint_path}")
-        return MODEL_CACHE[checkpoint_path]
+    with MODEL_CACHE_LOCK:
+        # Check if model is already in cache
+        if checkpoint_path in MODEL_CACHE:
+            # Move to end (most recently used)
+            MODEL_CACHE.move_to_end(checkpoint_path)
+            logging.info(f"Using cached model: {checkpoint_path}")
+            return MODEL_CACHE[checkpoint_path]
 
-    providers = (
-        ["CUDAExecutionProvider", "CPUExecutionProvider"]
-        if ONNX_PROVIDER == "CUDAExecutionProvider"
-        else ["CPUExecutionProvider"]
-    )
+        # If cache is full, remove oldest model
+        if len(MODEL_CACHE) >= MAX_CACHED_MODELS:
+            oldest_key = next(iter(MODEL_CACHE))
+            logging.info(f"Cache full, removing oldest model: {oldest_key}")
+            del MODEL_CACHE[oldest_key]
+            gc.collect()  # Force garbage collection
 
-    try:
-        if set_cpu:
-            sess = onnxruntime.InferenceSession(
-                checkpoint_path, providers=["CPUExecutionProvider"]
-            )
-        else:
-            try:
-                sess = onnxruntime.InferenceSession(checkpoint_path, providers=providers)
-            except Exception as e:
-                if ONNX_DEVICE == "CUDAExecutionProvider":
-                    logging.warning(f"Failed to load model with CUDAExecutionProvider: {e}")
-                    logging.info("Falling back to CPUExecutionProvider")
-                    sess = onnxruntime.InferenceSession(
-                        checkpoint_path, providers=["CPUExecutionProvider"]
-                    )
-                else:
-                    raise e
+        providers = (
+            ["CUDAExecutionProvider", "CPUExecutionProvider"]
+            if ONNX_PROVIDER == "CUDAExecutionProvider"
+            else ["CPUExecutionProvider"]
+        )
 
-        # Cache the loaded model
-        MODEL_CACHE[checkpoint_path] = sess
-        logging.info(f"Cached new model: {checkpoint_path}")
-        return sess
+        try:
+            if set_cpu:
+                sess = onnxruntime.InferenceSession(
+                    checkpoint_path, providers=["CPUExecutionProvider"]
+                )
+            else:
+                try:
+                    sess = onnxruntime.InferenceSession(checkpoint_path, providers=providers)
+                except Exception as e:
+                    if ONNX_DEVICE == "CUDAExecutionProvider":
+                        logging.warning(f"Failed to load model with CUDAExecutionProvider: {e}")
+                        logging.info("Falling back to CPUExecutionProvider")
+                        sess = onnxruntime.InferenceSession(
+                            checkpoint_path, providers=["CPUExecutionProvider"]
+                        )
+                    else:
+                        raise e
 
-    except Exception as e:
-        logging.error(f"Error loading model {checkpoint_path}: {str(e)}")
-        raise
+            # Cache the loaded model
+            MODEL_CACHE[checkpoint_path] = sess
+            logging.info(f"Cached new model: {checkpoint_path}")
+            return sess
+
+        except Exception as e:
+            logging.error(f"Error loading model {checkpoint_path}: {str(e)}")
+            raise
 
 
 def clear_model_cache():
     """
-    Clear the model cache
+    Clear the model cache and force garbage collection
     """
-    global MODEL_CACHE
-    MODEL_CACHE.clear()
-    logging.info("Model cache cleared")
+    with MODEL_CACHE_LOCK:
+        MODEL_CACHE.clear()
+        gc.collect()  # Force garbage collection
+        logging.info("Model cache cleared")
 
 
 def extract_human(ctx: Context):
