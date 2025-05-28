@@ -38,9 +38,11 @@ class ImageProcessor:
         self.processing_queue = asyncio.Queue(maxsize=50)  # Reduced queue size
         self.active_requests: Dict[str, ProcessingRequest] = {}
         self.active_workers = 0  # Track number of active workers
-        self.max_workers = min(cpu_count, 4)  # Limit max workers to 4
+        self.max_workers = min(cpu_count, 2)  # Limit to 2 workers
         self.memory_threshold = 0.7  # 70% memory threshold
         self.critical_memory_threshold = 0.85  # 85% critical threshold
+        self.last_cleanup_time = time.time()
+        self.cleanup_interval = 5  # Cleanup every 5 seconds
         
         # Create temp directory if it doesn't exist
         os.makedirs("temp", exist_ok=True)
@@ -49,6 +51,64 @@ class ImageProcessor:
         
         # Start the queue processor
         asyncio.create_task(self._process_queue())
+        # Start the cleanup task
+        asyncio.create_task(self._periodic_cleanup())
+    
+    def _get_memory_info(self) -> dict:
+        """Get detailed memory information."""
+        memory = psutil.virtual_memory()
+        return {
+            'total': memory.total / (1024 * 1024),  # Convert to MB
+            'available': memory.available / (1024 * 1024),
+            'used': memory.used / (1024 * 1024),
+            'percent': memory.percent,
+            'available_percent': (memory.available / memory.total) * 100
+        }
+    
+    def _log_memory_state(self, context: str):
+        """Log detailed memory state."""
+        mem_info = self._get_memory_info()
+        logging.info(f"Memory state ({context}):")
+        logging.info(f"- Total: {mem_info['total']:.2f} MB")
+        logging.info(f"- Available: {mem_info['available']:.2f} MB ({mem_info['available_percent']:.2f}%)")
+        logging.info(f"- Used: {mem_info['used']:.2f} MB ({mem_info['percent']}%)")
+        logging.info(f"- Active workers: {self.active_workers}/{self.max_workers}")
+        logging.info(f"- Queue size: {self.processing_queue.qsize()}/{self.processing_queue.maxsize}")
+    
+    async def _periodic_cleanup(self):
+        """Periodically clean up memory and temp files."""
+        while True:
+            try:
+                current_time = time.time()
+                if current_time - self.last_cleanup_time >= self.cleanup_interval:
+                    self._force_cleanup()
+                    self.last_cleanup_time = current_time
+                await asyncio.sleep(1)
+            except Exception as e:
+                logging.error(f"Error in periodic cleanup: {str(e)}")
+                await asyncio.sleep(5)
+    
+    def _force_cleanup(self):
+        """Force cleanup of memory and temp files."""
+        try:
+            # Clean up temp directory
+            temp_dir = "temp"
+            if os.path.exists(temp_dir):
+                for file in os.listdir(temp_dir):
+                    try:
+                        file_path = os.path.join(temp_dir, file)
+                        if os.path.isfile(file_path):
+                            os.remove(file_path)
+                    except Exception as e:
+                        logging.warning(f"Failed to remove temp file {file}: {str(e)}")
+            
+            # Force garbage collection
+            force_garbage_collection()
+            
+            # Log memory state after cleanup
+            self._log_memory_state("After cleanup")
+        except Exception as e:
+            logging.error(f"Error in force cleanup: {str(e)}")
     
     def _get_available_memory_percent(self) -> float:
         """Get available memory as a percentage."""
@@ -58,12 +118,18 @@ class ImageProcessor:
     def _should_start_new_worker(self) -> bool:
         """Check if we should start a new worker based on memory usage."""
         available_memory = self._get_available_memory_percent()
-        return available_memory > (1 - self.memory_threshold)
+        should_start = available_memory > (1 - self.memory_threshold)
+        if not should_start:
+            self._log_memory_state("Worker start check failed")
+        return should_start
     
     def _is_memory_critical(self) -> bool:
         """Check if memory usage is at critical levels."""
         available_memory = self._get_available_memory_percent()
-        return available_memory < (1 - self.critical_memory_threshold)
+        is_critical = available_memory < (1 - self.critical_memory_threshold)
+        if is_critical:
+            self._log_memory_state("Critical memory detected")
+        return is_critical
     
     async def _process_queue(self):
         """Process queued requests using multiple workers."""
@@ -72,6 +138,7 @@ class ImageProcessor:
                 # Check if memory is critical
                 if self._is_memory_critical():
                     logging.warning("Critical memory usage detected, pausing queue processing")
+                    self._force_cleanup()  # Try to free up memory
                     await asyncio.sleep(5)  # Wait longer when memory is critical
                     continue
                 
@@ -82,7 +149,7 @@ class ImageProcessor:
                     request = await self.processing_queue.get()
                     self.active_workers += 1
                     logging.info(f"Starting worker {self.active_workers} for request {request.request_id}")
-                    logging.info(f"Available memory: {self._get_available_memory_percent()*100:.2f}%")
+                    self._log_memory_state(f"Starting worker {self.active_workers}")
                     
                     # Process request in background
                     asyncio.create_task(self._process_with_worker(request))
@@ -99,18 +166,21 @@ class ImageProcessor:
             # Check memory before processing
             if self._is_memory_critical():
                 logging.warning(f"Critical memory detected, rejecting request {request.request_id}")
-                request.result = JSONResponse(
-                    status_code=503,
-                    content={
-                        "status": "error",
-                        "message": "Server is currently under heavy load. Please try again in a few moments.",
-                        "type": "ServiceUnavailable"
-                    }
-                )
-                return
+                self._force_cleanup()  # Try to free up memory
+                if self._is_memory_critical():  # Check again after cleanup
+                    request.result = JSONResponse(
+                        status_code=503,
+                        content={
+                            "status": "error",
+                            "message": "Server is currently under heavy load. Please try again in a few moments.",
+                            "type": "ServiceUnavailable"
+                        }
+                    )
+                    return
             
             if not self._should_start_new_worker():
                 logging.warning(f"Low memory detected, delaying request {request.request_id}")
+                self._force_cleanup()  # Try to free up memory
                 await asyncio.sleep(2)  # Wait longer for memory to free up
                 if not self._should_start_new_worker():
                     request.result = JSONResponse(
@@ -140,8 +210,8 @@ class ImageProcessor:
             self.processing_queue.task_done()
             if request.request_id in self.active_requests:
                 del self.active_requests[request.request_id]
-            # Force garbage collection after each request
-            force_garbage_collection()
+            # Force cleanup after each request
+            self._force_cleanup()
     
     async def _process_single_request(self, request: ProcessingRequest):
         """Process a single request from the queue."""
@@ -385,28 +455,32 @@ class ImageProcessor:
         Process an uploaded image by adding a pure white background
         """
         logging.info(f"Received file: {file.filename}")
-        log_memory_usage()
+        self._log_memory_state("New request received")
         
         # Check memory before accepting new request
         if self._is_memory_critical():
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "status": "error",
-                    "message": "Server is currently under heavy load. Please try again in a few moments.",
-                    "type": "ServiceUnavailable"
-                }
-            )
+            self._force_cleanup()  # Try to free up memory
+            if self._is_memory_critical():  # Check again after cleanup
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "status": "error",
+                        "message": "Server is currently under heavy load. Please try again in a few moments.",
+                        "type": "ServiceUnavailable"
+                    }
+                )
         
         if not self._should_start_new_worker():
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "status": "error",
-                    "message": "Server is currently under heavy load. Please try again in a few moments.",
-                    "type": "ServiceUnavailable"
-                }
-            )
+            self._force_cleanup()  # Try to free up memory
+            if not self._should_start_new_worker():  # Check again after cleanup
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "status": "error",
+                        "message": "Server is currently under heavy load. Please try again in a few moments.",
+                        "type": "ServiceUnavailable"
+                    }
+                )
         
         # Create temp directory if it doesn't exist
         os.makedirs("temp", exist_ok=True)
@@ -427,6 +501,7 @@ class ImageProcessor:
         
         # Check if queue is full
         if self.processing_queue.full():
+            self._log_memory_state("Queue full")
             return JSONResponse(
                 status_code=503,
                 content={
@@ -442,6 +517,7 @@ class ImageProcessor:
         try:
             # Add to processing queue
             await self.processing_queue.put(request)
+            self._log_memory_state(f"Request {request_id} queued")
             
             # Wait for processing to complete with timeout
             timeout_seconds = 30  # Reduced timeout to 30 seconds
