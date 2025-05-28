@@ -309,30 +309,45 @@ class ImageProcessor:
         temp_input = f"temp/{request_id}_input.jpg"
         temp_output = f"temp/{request_id}_output.jpg"
         
-        # Create processing request
-        request = ProcessingRequest(
-            file=file,
-            temp_input=temp_input,
-            temp_output=temp_output,
-            start_time=datetime.now(),
-            request_id=request_id
-        )
-        
-        # Check if queue is full
-        if self.processing_queue.full():
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "status": "error",
-                    "message": "Server is busy. Please try again in a few moments.",
-                    "type": "ServiceUnavailable"
-                }
-            )
-        
-        # Add to active requests
-        self.active_requests[request_id] = request
-        
+        # Read file content first to ensure it's not empty
         try:
+            content = await file.read()
+            if len(content) == 0:
+                logging.warning("Empty file received")
+                return JSONResponse(
+                    status_code=400,
+                    content={
+                        "status": "error",
+                        "message": "Empty file received."
+                    }
+                )
+            
+            # Reset file position for later reading
+            await file.seek(0)
+            
+            # Create processing request
+            request = ProcessingRequest(
+                file=file,
+                temp_input=temp_input,
+                temp_output=temp_output,
+                start_time=datetime.now(),
+                request_id=request_id
+            )
+            
+            # Check if queue is full
+            if self.processing_queue.full():
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "status": "error",
+                        "message": "Server is busy. Please try again in a few moments.",
+                        "type": "ServiceUnavailable"
+                    }
+                )
+            
+            # Add to active requests
+            self.active_requests[request_id] = request
+            
             # Add to processing queue
             await self.processing_queue.put(request)
             
