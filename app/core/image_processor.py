@@ -123,14 +123,18 @@ class ImageProcessor:
         process_memory = mem_info['process_memory']
         
         # Check both percentage and absolute memory
+        # We should start if we have enough available memory (above threshold)
+        # and our process memory is below the maximum
         should_start = (
-            available_memory > (1 - self.memory_threshold) and
+            available_memory >= self.memory_threshold and  # Changed from > (1 - threshold)
             process_memory < self.max_memory_mb
         )
         
         if not should_start:
             self._log_memory_state("Worker start check failed")
             logging.warning(f"Memory check failed: available={available_memory:.2%}, process={process_memory:.0f}MB")
+        else:
+            logging.info(f"Memory check passed: available={available_memory:.2%}, process={process_memory:.0f}MB")
         
         return should_start
     
@@ -141,14 +145,18 @@ class ImageProcessor:
         process_memory = mem_info['process_memory']
         
         # Check both percentage and absolute memory
+        # Memory is critical if available memory is below critical threshold
+        # or process memory exceeds maximum
         is_critical = (
-            available_memory < (1 - self.critical_memory_threshold) or
+            available_memory < self.critical_memory_threshold or  # Changed from < (1 - threshold)
             process_memory > self.max_memory_mb
         )
         
         if is_critical:
             self._log_memory_state("Critical memory detected")
             logging.warning(f"Critical memory: available={available_memory:.2%}, process={process_memory:.0f}MB")
+        else:
+            logging.info(f"Memory state healthy: available={available_memory:.2%}, process={process_memory:.0f}MB")
         
         return is_critical
     
