@@ -64,13 +64,9 @@ class ImageProcessor:
             process = psutil.Process()
             memory_mb = process.memory_info().rss / 1024 / 1024
             
-            # More aggressive memory checking for Railway
-            is_railway = os.getenv("RAILWAY_ENVIRONMENT") is not None
+            # Use configured threshold (already conservative for Railway)
             threshold = self.memory_threshold_mb
-            
-            if is_railway:
-                # Even more strict on Railway
-                threshold = min(threshold, 500)
+            is_railway = os.getenv("RAILWAY_ENVIRONMENT") is not None
             
             if memory_mb > threshold:
                 logging.warning(f"Memory usage too high: {memory_mb:.1f}MB > {threshold}MB (Railway: {is_railway})")
@@ -141,6 +137,18 @@ class ImageProcessor:
         try:
             logging.info(f"Starting processing for request {request.request_id}")
             
+            # Check memory before starting
+            if not self._check_memory_usage():
+                logging.warning(f"Memory too high before processing request {request.request_id}")
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "status": "error",
+                        "message": "Service temporarily unavailable due to high memory usage. Please try again later.",
+                        "request_id": request.request_id
+                    }
+                )
+            
             # Validate and save the uploaded file
             success, error_response = await self.validate_and_save_file(request.file, request.temp_input)
             if not success:
@@ -150,13 +158,31 @@ class ImageProcessor:
             logging.info(f"Processing image for request {request.request_id}...")
             log_memory_usage()
             
+            # Force garbage collection before intensive processing
+            force_garbage_collection()
+            
+            # Check memory again before the intensive image processing
+            if not self._check_memory_usage():
+                logging.warning(f"Memory too high before image processing for request {request.request_id}")
+                await self.cleanup_temp_files(request.temp_input, request.temp_output)
+                return JSONResponse(
+                    status_code=503,
+                    content={
+                        "status": "error",
+                        "message": "Service temporarily unavailable due to high memory usage. Please try again later.",
+                        "request_id": request.request_id
+                    }
+                )
+            
             # Process the image with timeout
             success, error_response = await self.process_image_with_timeout(request.temp_input, request.temp_output)
             if not success:
                 await self.cleanup_temp_files(request.temp_input, request.temp_output)
                 return error_response
             
+            # Aggressive garbage collection after processing
             force_garbage_collection()
+            log_memory_usage()
             
             # Read the processed image
             processed_image, error_response = await self.read_processed_image(request.temp_output)
@@ -164,9 +190,10 @@ class ImageProcessor:
                 await self.cleanup_temp_files(request.temp_input, request.temp_output)
                 return error_response
             
-            # Clean up temp files
+            # Clean up temp files immediately
             await self.cleanup_temp_files(request.temp_input, request.temp_output)
             
+            # Final cleanup
             force_garbage_collection()
             log_memory_usage()
             

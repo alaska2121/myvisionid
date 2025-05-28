@@ -23,7 +23,7 @@ class Config:
         if self.is_railway:
             # Even more conservative settings for Railway
             self.max_concurrent_workers = min(self.max_concurrent_workers, 1)
-            self.memory_threshold_mb = min(self.memory_threshold_mb, 1200)  # Increased from 600MB to 1200MB for 8GB Railway plan
+            self.memory_threshold_mb = min(self.memory_threshold_mb, 400)  # Very conservative: 400MB max for Railway
             logging.info("Railway environment detected - using conservative settings")
         
         # Validate configuration

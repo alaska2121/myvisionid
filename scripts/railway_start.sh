@@ -5,12 +5,18 @@ echo "=== Railway Startup Script ==="
 echo "Environment: RAILWAY"
 echo "Working directory: $(pwd)"
 echo "Python version: $(python --version)"
-echo "Available memory: $(free -h | grep '^Mem:' | awk '{print $2}') total"
+
+# Check if we're on Railway (free command may not be available)
+if command -v free >/dev/null 2>&1; then
+    echo "Available memory: $(free -h | grep '^Mem:' | awk '{print $2}') total"
+else
+    echo "Memory info: Railway container (free command not available)"
+fi
 
 # Set Railway environment variables
 export RAILWAY_ENVIRONMENT=true
 export MAX_CONCURRENT_WORKERS=1
-export MEMORY_THRESHOLD_MB=1200
+export MEMORY_THRESHOLD_MB=400
 export MAX_FILE_SIZE_MB=2
 
 echo "=== Configuration ==="
@@ -31,7 +37,13 @@ if [ $? -ne 0 ]; then
 fi
 
 echo "=== Starting Application ==="
-echo "Memory before start: $(free -h | grep '^Mem:' | awk '{print $3}') used"
+
+# Check memory before start (Railway-compatible)
+if command -v free >/dev/null 2>&1; then
+    echo "Memory before start: $(free -h | grep '^Mem:' | awk '{print $3}') used"
+else
+    echo "Memory before start: Railway container ready"
+fi
 
 # Start the FastAPI application
 exec uvicorn app.main:app \
