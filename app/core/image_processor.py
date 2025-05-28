@@ -356,9 +356,13 @@ class ImageProcessor:
                 try:
                     logging.info(f"Saving to {temp_input} (attempt {attempt + 1}/{max_retries})")
                     
-                    # Save file
+                    # Save file using aiofiles
                     async with aiofiles.open(temp_input, 'wb') as f:
                         await f.write(content)
+                        await f.flush()  # Ensure content is written to disk
+                    
+                    # Force sync to disk
+                    os.sync()
                     
                     # Verify file exists
                     if not os.path.exists(temp_input):
@@ -391,8 +395,12 @@ class ImageProcessor:
                     logging.info(f"Image verification successful. Image shape: {test_image.shape}")
                     logging.info(f"File successfully saved and verified at: {temp_input}")
                     
-                    # Ensure file is flushed to disk
-                    os.sync()
+                    # Set file permissions to ensure readability
+                    os.chmod(temp_input, 0o644)
+                    
+                    # Final verification before returning
+                    if not os.path.exists(temp_input):
+                        raise FileNotFoundError("File disappeared after verification")
                     
                     return True, None
                     
