@@ -15,11 +15,13 @@ fi
 
 # Set Railway environment variables
 export RAILWAY_ENVIRONMENT=true
+export RUN_MODE=beast
 export MAX_CONCURRENT_WORKERS=1
-export MEMORY_THRESHOLD_MB=400
+export MEMORY_THRESHOLD_MB=6000
 export MAX_FILE_SIZE_MB=2
 
 echo "=== Configuration ==="
+echo "RUN_MODE: $RUN_MODE (Beast Mode Enabled)"
 echo "MAX_CONCURRENT_WORKERS: $MAX_CONCURRENT_WORKERS"
 echo "MEMORY_THRESHOLD_MB: $MEMORY_THRESHOLD_MB"
 echo "MAX_FILE_SIZE_MB: $MAX_FILE_SIZE_MB"
@@ -44,6 +46,10 @@ if command -v free >/dev/null 2>&1; then
 else
     echo "Memory before start: Railway container ready"
 fi
+
+echo "=== Beast Mode Enabled ==="
+echo "Models will stay loaded in memory for faster processing"
+echo "Expected memory usage: ~2-3GB baseline + processing spikes"
 
 # Start the FastAPI application
 exec uvicorn app.main:app \

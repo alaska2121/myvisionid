@@ -64,23 +64,45 @@ class ImageProcessor:
             process = psutil.Process()
             memory_mb = process.memory_info().rss / 1024 / 1024
             
-            # Use configured threshold (already conservative for Railway)
-            threshold = self.memory_threshold_mb
+            # Beast Mode aware configuration
             is_railway = os.getenv("RAILWAY_ENVIRONMENT") is not None
+            is_beast_mode = os.getenv("RUN_MODE") == "beast"
+            
+            if is_beast_mode:
+                # Beast Mode: Models stay loaded, expect higher baseline
+                baseline_memory = 2500  # ~2.5GB baseline with loaded models
+                spike_threshold = 6000  # Allow up to 6GB during processing spikes
+                threshold = spike_threshold if is_railway else baseline_memory
+                
+                logging.debug(f"Beast Mode: Memory {memory_mb:.1f}MB (baseline: {baseline_memory}MB, spike limit: {spike_threshold}MB)")
+            else:
+                # Normal Mode: Use configured threshold
+                threshold = self.memory_threshold_mb
+                logging.debug(f"Normal Mode: Memory {memory_mb:.1f}MB (threshold: {threshold}MB)")
             
             if memory_mb > threshold:
-                logging.warning(f"Memory usage too high: {memory_mb:.1f}MB > {threshold}MB (Railway: {is_railway})")
+                mode_info = "Beast Mode" if is_beast_mode else "Normal Mode"
+                logging.warning(f"{mode_info}: Memory usage high: {memory_mb:.1f}MB > {threshold}MB (Railway: {is_railway})")
                 
-                # Force garbage collection immediately
-                force_garbage_collection()
-                
-                # Check again after cleanup
-                memory_mb_after = process.memory_info().rss / 1024 / 1024
-                if memory_mb_after > threshold:
-                    logging.warning(f"Memory still high after cleanup: {memory_mb_after:.1f}MB > {threshold}MB")
-                    return False
+                # In Beast Mode, be less aggressive with cleanup since models should stay loaded
+                if not is_beast_mode:
+                    # Force garbage collection immediately
+                    force_garbage_collection()
+                    
+                    # Check again after cleanup
+                    memory_mb_after = process.memory_info().rss / 1024 / 1024
+                    if memory_mb_after > threshold:
+                        logging.warning(f"Memory still high after cleanup: {memory_mb_after:.1f}MB > {threshold}MB")
+                        return False
+                    else:
+                        logging.info(f"Memory cleaned up: {memory_mb:.1f}MB -> {memory_mb_after:.1f}MB")
                 else:
-                    logging.info(f"Memory cleaned up: {memory_mb:.1f}MB -> {memory_mb_after:.1f}MB")
+                    # Beast Mode: Only reject if extremely high (Railway limit protection)
+                    if memory_mb > 7000:  # 7GB hard limit for Railway protection
+                        logging.error(f"Beast Mode: Memory critically high: {memory_mb:.1f}MB > 7000MB (Railway protection)")
+                        return False
+                    else:
+                        logging.info(f"Beast Mode: Memory spike within acceptable range: {memory_mb:.1f}MB")
             
             return True
         except Exception as e:
@@ -327,35 +349,102 @@ class ImageProcessor:
             )
 
     async def process_image_with_timeout(self, temp_input: str, temp_output: str) -> tuple[bool, JSONResponse | None]:
-        """Process the image with a timeout."""
+        """Process the image with a timeout and aggressive memory management."""
         try:
             # Shorter timeout for Railway
             is_railway = os.getenv("RAILWAY_ENVIRONMENT") is not None
             timeout_seconds = 35 if is_railway else 50
             
+            # Pre-processing memory check and cleanup for Railway
+            if is_railway:
+                logging.info("Railway: Pre-processing memory check and cleanup")
+                force_garbage_collection()
+                
+                # Check memory before starting intensive processing
+                process = psutil.Process()
+                memory_before = process.memory_info().rss / 1024 / 1024
+                logging.info(f"Railway: Memory before processing: {memory_before:.1f}MB")
+                
+                # If memory is already high, reject the request
+                if memory_before > 1500:  # Conservative pre-check
+                    logging.warning(f"Railway: Memory too high before processing: {memory_before:.1f}MB")
+                    return False, JSONResponse(
+                        status_code=503,
+                        content={
+                            "status": "error",
+                            "message": "Service temporarily unavailable due to high memory usage. Please try again later.",
+                            "type": "MemoryConstraint",
+                            "environment": "railway"
+                        }
+                    )
+            
             loop = asyncio.get_event_loop()
             with timeout(timeout_seconds):
-                result = await loop.run_in_executor(
-                    self.thread_pool,
-                    lambda: run(
-                        input_image_path=temp_input,
-                        output_image_path=temp_output,
-                        type="add_background",
-                        height=288,
-                        width=240,
-                        color="FFFFFF",  # Pure white
-                        hd=True,
-                        kb=None,
-                        render=0,
-                        dpi=300,
-                        face_align=False,
-                        matting_model=self.config.matting_model,
-                        face_detect_model="retinaface-resnet50",
+                # Railway-specific memory monitoring wrapper
+                if is_railway:
+                    def memory_aware_processing():
+                        logging.info("Railway: Starting memory-monitored processing")
+                        result = run(
+                            input_image_path=temp_input,
+                            output_image_path=temp_output,
+                            type="add_background",
+                            height=288,
+                            width=240,
+                            color="FFFFFF",  # Pure white
+                            hd=True,
+                            kb=None,
+                            render=0,
+                            dpi=300,
+                            face_align=False,
+                            matting_model=self.config.matting_model,
+                            face_detect_model="retinaface-resnet50",
+                        )
+                        
+                        # Immediate cleanup after processing
+                        logging.info("Railway: Forcing garbage collection after processing")
+                        force_garbage_collection()
+                        
+                        # Log memory after processing
+                        process = psutil.Process()
+                        memory_after = process.memory_info().rss / 1024 / 1024
+                        logging.info(f"Railway: Memory after processing: {memory_after:.1f}MB")
+                        
+                        return result
+                    
+                    result = await loop.run_in_executor(self.thread_pool, memory_aware_processing)
+                else:
+                    # Standard processing for non-Railway environments
+                    result = await loop.run_in_executor(
+                        self.thread_pool,
+                        lambda: run(
+                            input_image_path=temp_input,
+                            output_image_path=temp_output,
+                            type="add_background",
+                            height=288,
+                            width=240,
+                            color="FFFFFF",  # Pure white
+                            hd=True,
+                            kb=None,
+                            render=0,
+                            dpi=300,
+                            face_align=False,
+                            matting_model=self.config.matting_model,
+                            face_detect_model="retinaface-resnet50",
+                        )
                     )
-                )
+            
+            # Post-processing cleanup for Railway
+            if is_railway:
+                logging.info("Railway: Post-processing memory cleanup")
+                force_garbage_collection()
+            
             return True, None
+            
         except TimeoutError:
             logging.error(f"Image processing timed out after {timeout_seconds} seconds (Railway: {is_railway})")
+            # Force cleanup on timeout
+            if is_railway:
+                force_garbage_collection()
             return False, JSONResponse(
                 status_code=504,
                 content={
@@ -370,6 +459,9 @@ class ImageProcessor:
             logging.error(f"Error during image processing: {str(processing_error)}")
             logging.error("Full traceback:")
             logging.error(traceback.format_exc())
+            # Force cleanup on error
+            if is_railway:
+                force_garbage_collection()
             return False, JSONResponse(
                 status_code=500,
                 content={

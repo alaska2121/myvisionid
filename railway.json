@@ -13,8 +13,9 @@
     },
     "environment": {
         "RAILWAY_ENVIRONMENT": "true",
+        "RUN_MODE": "beast",
         "MAX_CONCURRENT_WORKERS": "1",
-        "MEMORY_THRESHOLD_MB": "400",
+        "MEMORY_THRESHOLD_MB": "6000",
         "MAX_FILE_SIZE_MB": "2",
         "PYTHONUNBUFFERED": "1",
         "OMP_NUM_THREADS": "1",

@@ -12,6 +12,9 @@ class Config:
         self.matting_model = os.getenv("MATTING_MODEL", "birefnet-v1-lite")
         self.face_detect_model = os.getenv("FACE_DETECT_MODEL", "retinaface-resnet50")
         
+        # Beast Mode detection
+        self.is_beast_mode = os.getenv("RUN_MODE") == "beast"
+        
         # More conservative defaults for cloud deployment
         self.max_concurrent_workers = int(os.getenv("MAX_CONCURRENT_WORKERS", "1"))  # Default to 1 for Railway
         self.memory_threshold_mb = int(os.getenv("MEMORY_THRESHOLD_MB", "800"))  # Reduced for Railway
@@ -21,10 +24,17 @@ class Config:
         self.is_railway = os.getenv("RAILWAY_ENVIRONMENT") is not None
         
         if self.is_railway:
-            # Even more conservative settings for Railway
+            # Conservative settings for Railway
             self.max_concurrent_workers = min(self.max_concurrent_workers, 1)
-            self.memory_threshold_mb = min(self.memory_threshold_mb, 400)  # Very conservative: 400MB max for Railway
-            logging.info("Railway environment detected - using conservative settings")
+            
+            if self.is_beast_mode:
+                # Beast Mode: Higher baseline but more predictable memory usage
+                self.memory_threshold_mb = 6000  # Allow up to 6GB for beast mode spikes
+                logging.info("Railway + Beast Mode detected - models will stay loaded in memory")
+            else:
+                # Normal Mode: Lower threshold for frequent model loading/unloading
+                self.memory_threshold_mb = min(self.memory_threshold_mb, 2000)  # Conservative for model loading spikes
+                logging.info("Railway environment detected - using conservative settings")
         
         # Validate configuration
         if self.max_concurrent_workers < 1:
@@ -32,7 +42,7 @@ class Config:
         if self.max_concurrent_workers > 3:
             self.max_concurrent_workers = 3  # Cap to prevent memory issues
         
-        logging.info(f"Config initialized: workers={self.max_concurrent_workers}, memory_threshold={self.memory_threshold_mb}MB, railway={self.is_railway}")
+        logging.info(f"Config initialized: workers={self.max_concurrent_workers}, memory_threshold={self.memory_threshold_mb}MB, railway={self.is_railway}, beast_mode={self.is_beast_mode}")
     
     def _get_log_file_path(self) -> str:
         """Get the path for the log file."""
