@@ -328,7 +328,7 @@ def get_mnn_modnet_matting(input_image, checkpoint_path, ref_size=512):
     return output_image
 
 
-def get_birefnet_portrait_matting(input_image, checkpoint_path, ref_size=512):
+def get_birefnet_portrait_matting(input_image, checkpoint_path, ref_size=1024):
     if not os.path.exists(checkpoint_path):
         raise FileNotFoundError(f"Model file not found: {checkpoint_path}")
 
@@ -340,9 +340,13 @@ def get_birefnet_portrait_matting(input_image, checkpoint_path, ref_size=512):
     logging.info(f"Model input name: {input_name}")
     
     def transform_image(image):
-        image = cv2.resize(image, (ref_size, ref_size))
+        # Resize to 1024x1024 as required by the model
+        image = cv2.resize(image, (1024, 1024))
+        # Normalize to [0, 1]
         image = image.astype(np.float32) / 255.0
+        # Change from (H, W, C) to (C, H, W)
         image = np.transpose(image, (2, 0, 1))
+        # Add batch dimension
         image = np.expand_dims(image, 0)
         return image
 
