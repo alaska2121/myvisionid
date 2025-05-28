@@ -15,10 +15,6 @@ from .context import Context
 import cv2
 import os
 from time import time
-import logging
-import threading
-import gc
-from collections import OrderedDict
 
 
 WEIGHTS = {
@@ -46,11 +42,6 @@ ONNX_PROVIDER = (
     "CUDAExecutionProvider" if ONNX_DEVICE == "GPU" else "CPUExecutionProvider"
 )
 
-# Model cache with size limit
-MODEL_CACHE = OrderedDict()
-MAX_CACHED_MODELS = 2
-MODEL_CACHE_LOCK = threading.Lock()
-
 HIVISION_MODNET_SESS = None
 MODNET_PHOTOGRAPHIC_PORTRAIT_MATTING_SESS = None
 RMBG_SESS = None
@@ -58,66 +49,31 @@ BIREFNET_V1_LITE_SESS = None
 
 
 def load_onnx_model(checkpoint_path, set_cpu=False):
-    """
-    Load ONNX model with caching and memory management
-    """
-    with MODEL_CACHE_LOCK:
-        # Check if model is already in cache
-        if checkpoint_path in MODEL_CACHE:
-            # Move to end (most recently used)
-            MODEL_CACHE.move_to_end(checkpoint_path)
-            logging.info(f"Using cached model: {checkpoint_path}")
-            return MODEL_CACHE[checkpoint_path]
+    providers = (
+        ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        if ONNX_PROVIDER == "CUDAExecutionProvider"
+        else ["CPUExecutionProvider"]
+    )
 
-        # If cache is full, remove oldest model
-        if len(MODEL_CACHE) >= MAX_CACHED_MODELS:
-            oldest_key = next(iter(MODEL_CACHE))
-            logging.info(f"Cache full, removing oldest model: {oldest_key}")
-            del MODEL_CACHE[oldest_key]
-            gc.collect()  # Force garbage collection
-
-        providers = (
-            ["CUDAExecutionProvider", "CPUExecutionProvider"]
-            if ONNX_PROVIDER == "CUDAExecutionProvider"
-            else ["CPUExecutionProvider"]
+    if set_cpu:
+        sess = onnxruntime.InferenceSession(
+            checkpoint_path, providers=["CPUExecutionProvider"]
         )
-
+    else:
         try:
-            if set_cpu:
+            sess = onnxruntime.InferenceSession(checkpoint_path, providers=providers)
+        except Exception as e:
+            if ONNX_DEVICE == "CUDAExecutionProvider":
+                print(f"Failed to load model with CUDAExecutionProvider: {e}")
+                print("Falling back to CPUExecutionProvider")
+                # 尝试使用CPU加载模型
                 sess = onnxruntime.InferenceSession(
                     checkpoint_path, providers=["CPUExecutionProvider"]
                 )
             else:
-                try:
-                    sess = onnxruntime.InferenceSession(checkpoint_path, providers=providers)
-                except Exception as e:
-                    if ONNX_DEVICE == "CUDAExecutionProvider":
-                        logging.warning(f"Failed to load model with CUDAExecutionProvider: {e}")
-                        logging.info("Falling back to CPUExecutionProvider")
-                        sess = onnxruntime.InferenceSession(
-                            checkpoint_path, providers=["CPUExecutionProvider"]
-                        )
-                    else:
-                        raise e
+                raise e  # 如果是CPU执行失败，重新抛出异常
 
-            # Cache the loaded model
-            MODEL_CACHE[checkpoint_path] = sess
-            logging.info(f"Cached new model: {checkpoint_path}")
-            return sess
-
-        except Exception as e:
-            logging.error(f"Error loading model {checkpoint_path}: {str(e)}")
-            raise
-
-
-def clear_model_cache():
-    """
-    Clear the model cache and force garbage collection
-    """
-    with MODEL_CACHE_LOCK:
-        MODEL_CACHE.clear()
-        gc.collect()  # Force garbage collection
-        logging.info("Model cache cleared")
+    return sess
 
 
 def extract_human(ctx: Context):
@@ -239,73 +195,124 @@ def read_modnet_image(input_image, ref_size=512):
 
 
 def get_modnet_matting(input_image, checkpoint_path, ref_size=512):
-    if not os.path.exists(checkpoint_path):
-        raise FileNotFoundError(f"Model file not found: {checkpoint_path}")
+    global HIVISION_MODNET_SESS
 
-    # Load model with caching
-    sess = load_onnx_model(checkpoint_path)
+    if not os.path.exists(checkpoint_path):
+        print(f"Checkpoint file not found: {checkpoint_path}")
+        return None
+
+    # 如果RUN_MODE不是野兽模式，则不加载模型
+    if HIVISION_MODNET_SESS is None:
+        HIVISION_MODNET_SESS = load_onnx_model(checkpoint_path, set_cpu=True)
+
+    input_name = HIVISION_MODNET_SESS.get_inputs()[0].name
+    output_name = HIVISION_MODNET_SESS.get_outputs()[0].name
+
+    im, width, length = read_modnet_image(input_image=input_image, ref_size=ref_size)
+
+    matte = HIVISION_MODNET_SESS.run([output_name], {input_name: im})
+    matte = (matte[0] * 255).astype("uint8")
+    matte = np.squeeze(matte)
+    mask = cv2.resize(matte, (width, length), interpolation=cv2.INTER_AREA)
+    b, g, r = cv2.split(np.uint8(input_image))
+
+    output_image = cv2.merge((b, g, r, mask))
     
-    # Rest of the function remains the same
-    im, width, length = read_modnet_image(input_image, ref_size)
-    im = im.astype(np.float32)
-    im = np.transpose(im, (0, 2, 3, 1))
-    im = np.squeeze(im)
-    im = (im * 255).astype(np.uint8)
-    im = cv2.resize(im, (width, length), interpolation=cv2.INTER_AREA)
-    return im
+    # 如果RUN_MODE不是野兽模式，则释放模型
+    if os.getenv("RUN_MODE") != "beast":
+        HIVISION_MODNET_SESS = None
+
+    return output_image
 
 
 def get_modnet_matting_photographic_portrait_matting(
     input_image, checkpoint_path, ref_size=512
 ):
-    if not os.path.exists(checkpoint_path):
-        raise FileNotFoundError(f"Model file not found: {checkpoint_path}")
+    global MODNET_PHOTOGRAPHIC_PORTRAIT_MATTING_SESS
 
-    # Load model with caching
-    sess = load_onnx_model(checkpoint_path)
+    if not os.path.exists(checkpoint_path):
+        print(f"Checkpoint file not found: {checkpoint_path}")
+        return None
+
+    # 如果RUN_MODE不是野兽模式，则不加载模型
+    if MODNET_PHOTOGRAPHIC_PORTRAIT_MATTING_SESS is None:
+        MODNET_PHOTOGRAPHIC_PORTRAIT_MATTING_SESS = load_onnx_model(
+            checkpoint_path, set_cpu=True
+        )
+
+    input_name = MODNET_PHOTOGRAPHIC_PORTRAIT_MATTING_SESS.get_inputs()[0].name
+    output_name = MODNET_PHOTOGRAPHIC_PORTRAIT_MATTING_SESS.get_outputs()[0].name
+
+    im, width, length = read_modnet_image(input_image=input_image, ref_size=ref_size)
+
+    matte = MODNET_PHOTOGRAPHIC_PORTRAIT_MATTING_SESS.run(
+        [output_name], {input_name: im}
+    )
+    matte = (matte[0] * 255).astype("uint8")
+    matte = np.squeeze(matte)
+    mask = cv2.resize(matte, (width, length), interpolation=cv2.INTER_AREA)
+    b, g, r = cv2.split(np.uint8(input_image))
+
+    output_image = cv2.merge((b, g, r, mask))
     
-    # Rest of the function remains the same
-    im, width, length = read_modnet_image(input_image, ref_size)
-    im = im.astype(np.float32)
-    im = np.transpose(im, (0, 2, 3, 1))
-    im = np.squeeze(im)
-    im = (im * 255).astype(np.uint8)
-    im = cv2.resize(im, (width, length), interpolation=cv2.INTER_AREA)
-    return im
+    # 如果RUN_MODE不是野兽模式，则释放模型
+    if os.getenv("RUN_MODE") != "beast":
+        MODNET_PHOTOGRAPHIC_PORTRAIT_MATTING_SESS = None
+
+    return output_image
 
 
 def get_rmbg_matting(input_image: np.ndarray, checkpoint_path, ref_size=1024):
+    global RMBG_SESS
+
     if not os.path.exists(checkpoint_path):
-        raise FileNotFoundError(f"Model file not found: {checkpoint_path}")
+        print(f"Checkpoint file not found: {checkpoint_path}")
+        return None
 
-    # Load model with caching
-    sess = load_onnx_model(checkpoint_path)
-    
-    # Rest of the function remains the same
     def resize_rmbg_image(image):
-        h, w = image.shape[:2]
-        scale = ref_size / max(h, w)
-        new_h, new_w = int(h * scale), int(w * scale)
-        return cv2.resize(image, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        image = image.convert("RGB")
+        model_input_size = (ref_size, ref_size)
+        image = image.resize(model_input_size, Image.BILINEAR)
+        return image
 
-    # Process image
-    image = resize_rmbg_image(input_image)
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    image = image.astype(np.float32) / 255.0
-    image = np.transpose(image, (2, 0, 1))
-    image = np.expand_dims(image, 0)
+    if RMBG_SESS is None:
+        RMBG_SESS = load_onnx_model(checkpoint_path, set_cpu=True)
 
-    # Run inference
-    outputs = sess.run(None, {"input": image})
-    alpha = outputs[0][0]
-    alpha = np.transpose(alpha, (1, 2, 0))
-    alpha = cv2.resize(alpha, (input_image.shape[1], input_image.shape[0]))
-    alpha = np.clip(alpha * 255, 0, 255).astype(np.uint8)
+    orig_image = Image.fromarray(input_image)
+    image = resize_rmbg_image(orig_image)
+    im_np = np.array(image).astype(np.float32)
+    im_np = im_np.transpose(2, 0, 1)  # Change to CxHxW format
+    im_np = np.expand_dims(im_np, axis=0)  # Add batch dimension
+    im_np = im_np / 255.0  # Normalize to [0, 1]
+    im_np = (im_np - 0.5) / 0.5  # Normalize to [-1, 1]
 
-    # Create RGBA output
-    rgba = cv2.cvtColor(input_image, cv2.COLOR_BGR2BGRA)
-    rgba[:, :, 3] = alpha
-    return rgba
+    # Inference
+    result = RMBG_SESS.run(None, {RMBG_SESS.get_inputs()[0].name: im_np})[0]
+
+    # Post process
+    result = np.squeeze(result)
+    ma = np.max(result)
+    mi = np.min(result)
+    result = (result - mi) / (ma - mi)  # Normalize to [0, 1]
+
+    # Convert to PIL image
+    im_array = (result * 255).astype(np.uint8)
+    pil_im = Image.fromarray(
+        im_array, mode="L"
+    )  # Ensure mask is single channel (L mode)
+
+    # Resize the mask to match the original image size
+    pil_im = pil_im.resize(orig_image.size, Image.BILINEAR)
+
+    # Paste the mask on the original image
+    new_im = Image.new("RGBA", orig_image.size, (0, 0, 0, 0))
+    new_im.paste(orig_image, mask=pil_im)
+    
+    # 如果RUN_MODE不是野兽模式，则释放模型
+    if os.getenv("RUN_MODE") != "beast":
+        RMBG_SESS = None
+
+    return np.array(new_im)
 
 
 def get_mnn_modnet_matting(input_image, checkpoint_path, ref_size=512):
@@ -344,62 +351,78 @@ def get_mnn_modnet_matting(input_image, checkpoint_path, ref_size=512):
     return output_image
 
 
-def get_birefnet_portrait_matting(input_image, checkpoint_path, ref_size=1024):
+def get_birefnet_portrait_matting(input_image, checkpoint_path, ref_size=512):
+    global BIREFNET_V1_LITE_SESS
+
     if not os.path.exists(checkpoint_path):
-        raise FileNotFoundError(f"Model file not found: {checkpoint_path}")
+        print(f"Checkpoint file not found: {checkpoint_path}")
+        return None
 
-    # Load model with caching
-    sess = load_onnx_model(checkpoint_path)
+    def transform_image(image):
+        image = image.resize((1024, 1024))  # Resize to 1024x1024
+        image = (
+            np.array(image, dtype=np.float32) / 255.0
+        )  # Convert to numpy array and normalize to [0, 1]
+        image = (image - [0.485, 0.456, 0.406]) / [0.229, 0.224, 0.225]  # Normalize
+        image = np.transpose(image, (2, 0, 1))  # Change from (H, W, C) to (C, H, W)
+        image = np.expand_dims(image, axis=0)  # Add batch dimension
+        return image.astype(np.float32)  # Ensure the output is float32
+
+    orig_image = Image.fromarray(input_image)
+    input_images = transform_image(
+        orig_image
+    )  # This will already have the correct shape
+
+    # 记录加载onnx模型的开始时间
+    load_start_time = time()
+
+    # 如果RUN_MODE不是野兽模式，则不加载模型
+    if BIREFNET_V1_LITE_SESS is None:
+        # print("首次加载birefnet-v1-lite模型...")
+        if ONNX_DEVICE == "GPU":
+            print("onnxruntime-gpu已安装，尝试使用CUDA加载模型")
+            try:
+                import torch
+            except ImportError:
+                print(
+                    "torch未安装，尝试直接使用onnxruntime-gpu加载模型，这需要配置好CUDA和cuDNN"
+                )
+            BIREFNET_V1_LITE_SESS = load_onnx_model(checkpoint_path)
+        else:
+            BIREFNET_V1_LITE_SESS = load_onnx_model(checkpoint_path, set_cpu=True)
+
+    # 记录加载onnx模型的结束时间
+    load_end_time = time()
+
+    # 打印加载onnx模型所花的时间
+    print(f"Loading ONNX model took {load_end_time - load_start_time:.4f} seconds")
+
+    input_name = BIREFNET_V1_LITE_SESS.get_inputs()[0].name
+    print(onnxruntime.get_device(), BIREFNET_V1_LITE_SESS.get_providers())
+
+    time_st = time()
+    pred_onnx = BIREFNET_V1_LITE_SESS.run(None, {input_name: input_images})[
+        -1
+    ]  # Use float32 input
+    pred_onnx = np.squeeze(pred_onnx)  # Use numpy to squeeze
+    result = 1 / (1 + np.exp(-pred_onnx))  # Sigmoid function using numpy
+    print(f"Inference time: {time() - time_st:.4f} seconds")
+
+    # Convert to PIL image
+    im_array = (result * 255).astype(np.uint8)
+    pil_im = Image.fromarray(
+        im_array, mode="L"
+    )  # Ensure mask is single channel (L mode)
+
+    # Resize the mask to match the original image size
+    pil_im = pil_im.resize(orig_image.size, Image.BILINEAR)
+
+    # Paste the mask on the original image
+    new_im = Image.new("RGBA", orig_image.size, (0, 0, 0, 0))
+    new_im.paste(orig_image, mask=pil_im)
     
-    # Get the input name from the model
-    input_name = sess.get_inputs()[0].name
-    logging.info(f"Model input name: {input_name}")
-    
-    try:
-        def transform_image(image):
-            # Resize to 1024x1024 as required by the model
-            image = cv2.resize(image, (1024, 1024))
-            # Normalize to [0, 1]
-            image = image.astype(np.float32) / 255.0
-            # Change from (H, W, C) to (C, H, W)
-            image = np.transpose(image, (2, 0, 1))
-            # Add batch dimension
-            image = np.expand_dims(image, 0)
-            return image
+    # 如果RUN_MODE不是野兽模式，则释放模型
+    if os.getenv("RUN_MODE") != "beast":
+        BIREFNET_V1_LITE_SESS = None
 
-        # Process image
-        image = transform_image(input_image)
-        
-        # Use the correct input name from the model
-        outputs = sess.run(None, {input_name: image})
-        
-        # Process outputs and create alpha mask
-        alpha = outputs[0][0]
-        alpha = np.transpose(alpha, (1, 2, 0))
-        alpha = cv2.resize(alpha, (input_image.shape[1], input_image.shape[0]))
-        alpha = np.clip(alpha * 255, 0, 255).astype(np.uint8)
-
-        # Create RGBA output
-        rgba = cv2.cvtColor(input_image, cv2.COLOR_BGR2BGRA)
-        rgba[:, :, 3] = alpha
-
-        # Clean up intermediate variables
-        del image, outputs, alpha
-        import gc
-        gc.collect()
-
-        return rgba
-
-    except Exception as e:
-        logging.error(f"Error during birefnet matting: {str(e)}")
-        raise
-    finally:
-        # Clean up any remaining variables
-        if 'image' in locals():
-            del image
-        if 'outputs' in locals():
-            del outputs
-        if 'alpha' in locals():
-            del alpha
-        import gc
-        gc.collect()
+    return np.array(new_im)
