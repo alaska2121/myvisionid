@@ -232,7 +232,29 @@ class ImageProcessor:
                 if self._is_memory_critical():
                     raise Exception("Memory usage too high after processing")
             
-            request.result = result
+            # Read the processed image
+            try:
+                async with aiofiles.open(request.temp_output, 'rb') as f:
+                    processed_image = await f.read()
+                
+                if not processed_image:
+                    raise ValueError("Processed image is empty")
+                
+                logging.info(f"Processed image size: {len(processed_image)} bytes")
+                
+                # Create response with the processed image
+                request.result = Response(
+                    content=processed_image,
+                    media_type="image/jpeg",
+                    headers={
+                        "Content-Type": "image/jpeg",
+                        "Content-Length": str(len(processed_image))
+                    }
+                )
+                
+            except Exception as read_error:
+                logging.error(f"Error reading processed image: {str(read_error)}")
+                raise Exception(f"Failed to read processed image: {str(read_error)}")
             
         except Exception as e:
             logging.error(f"Error processing request: {str(e)}")
