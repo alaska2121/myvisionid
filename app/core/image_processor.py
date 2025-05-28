@@ -382,6 +382,10 @@ class ImageProcessor:
                     
                     logging.info(f"Image verification successful. Image shape: {test_image.shape}")
                     logging.info(f"File successfully saved and verified at: {temp_input}")
+                    
+                    # Ensure file is flushed to disk
+                    os.sync()
+                    
                     return True, None
                     
                 except Exception as save_error:
@@ -428,6 +432,9 @@ class ImageProcessor:
                 raise ValueError(f"Failed to read input image with OpenCV: {temp_input}")
             
             logging.info(f"Input image verified. Shape: {test_image.shape}")
+            
+            # Ensure file is flushed to disk
+            os.sync()
             
             loop = asyncio.get_event_loop()
             with timeout(50):  # 50 second timeout
