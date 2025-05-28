@@ -11,6 +11,7 @@ import aiofiles
 from typing import Dict, Optional
 from dataclasses import dataclass
 from datetime import datetime
+import time
 
 from app.core.config import Config
 from app.utils.memory import log_memory_usage, force_garbage_collection
@@ -38,6 +39,7 @@ class ImageProcessor:
         self.active_requests: Dict[str, ProcessingRequest] = {}
         self.active_workers = 0  # Track number of active workers
         self.max_workers = cpu_count
+        self.memory_threshold = 0.8  # 80% memory threshold
         
         # Create temp directory if it doesn't exist
         os.makedirs("temp", exist_ok=True)
@@ -47,25 +49,57 @@ class ImageProcessor:
         # Start the queue processor
         asyncio.create_task(self._process_queue())
     
+    def _get_available_memory_percent(self) -> float:
+        """Get available memory as a percentage."""
+        memory = psutil.virtual_memory()
+        return memory.available / memory.total
+    
+    def _should_start_new_worker(self) -> bool:
+        """Check if we should start a new worker based on memory usage."""
+        available_memory = self._get_available_memory_percent()
+        return available_memory > (1 - self.memory_threshold)
+    
     async def _process_queue(self):
         """Process queued requests using multiple workers."""
         while True:
-            # Check if we can start more workers
-            while self.active_workers < self.max_workers and not self.processing_queue.empty():
-                request = await self.processing_queue.get()
-                self.active_workers += 1
-                logging.info(f"Starting worker {self.active_workers} for request {request.request_id}")
+            try:
+                # Check if we can start more workers
+                while (self.active_workers < self.max_workers and 
+                       not self.processing_queue.empty() and 
+                       self._should_start_new_worker()):
+                    request = await self.processing_queue.get()
+                    self.active_workers += 1
+                    logging.info(f"Starting worker {self.active_workers} for request {request.request_id}")
+                    logging.info(f"Available memory: {self._get_available_memory_percent()*100:.2f}%")
+                    
+                    # Process request in background
+                    asyncio.create_task(self._process_with_worker(request))
                 
-                # Process request in background
-                asyncio.create_task(self._process_with_worker(request))
-            
-            await asyncio.sleep(0.1)  # Prevent CPU spinning
+                await asyncio.sleep(0.1)  # Prevent CPU spinning
+            except Exception as e:
+                logging.error(f"Error in queue processor: {str(e)}")
+                logging.error(traceback.format_exc())
+                await asyncio.sleep(1)  # Wait before retrying
     
     async def _process_with_worker(self, request: ProcessingRequest):
         """Process a single request using a worker."""
         try:
+            # Check memory before processing
+            if not self._should_start_new_worker():
+                logging.warning(f"Low memory detected, delaying request {request.request_id}")
+                await asyncio.sleep(1)  # Wait for memory to free up
+                if not self._should_start_new_worker():
+                    request.result = JSONResponse(
+                        status_code=503,
+                        content={
+                            "status": "error",
+                            "message": "Server is currently under heavy load. Please try again in a few moments.",
+                            "type": "ServiceUnavailable"
+                        }
+                    )
+                    return
+            
             result = await self._process_single_request(request)
-            # Store result in request for later retrieval
             request.result = result
         except Exception as e:
             logging.error(f"Error in worker processing request {request.request_id}: {str(e)}")
@@ -82,6 +116,8 @@ class ImageProcessor:
             self.processing_queue.task_done()
             if request.request_id in self.active_requests:
                 del self.active_requests[request.request_id]
+            # Force garbage collection after each request
+            force_garbage_collection()
     
     async def _process_single_request(self, request: ProcessingRequest):
         """Process a single request from the queue."""
@@ -327,6 +363,17 @@ class ImageProcessor:
         logging.info(f"Received file: {file.filename}")
         log_memory_usage()
         
+        # Check memory before accepting new request
+        if not self._should_start_new_worker():
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "error",
+                    "message": "Server is currently under heavy load. Please try again in a few moments.",
+                    "type": "ServiceUnavailable"
+                }
+            )
+        
         # Create temp directory if it doesn't exist
         os.makedirs("temp", exist_ok=True)
         
@@ -362,13 +409,29 @@ class ImageProcessor:
             # Add to processing queue
             await self.processing_queue.put(request)
             
-            # Wait for processing to complete
+            # Wait for processing to complete with timeout
+            timeout_seconds = 60  # 1 minute timeout
+            start_time = time.time()
             while request_id in self.active_requests:
+                if time.time() - start_time > timeout_seconds:
+                    raise TimeoutError("Request processing timed out")
                 await asyncio.sleep(0.1)
             
             # Return the result
             return request.result
             
+        except TimeoutError:
+            logging.error(f"Request {request_id} timed out after {timeout_seconds} seconds")
+            if request_id in self.active_requests:
+                del self.active_requests[request_id]
+            return JSONResponse(
+                status_code=504,
+                content={
+                    "status": "error",
+                    "message": "Request processing timed out. Please try again.",
+                    "type": "TimeoutError"
+                }
+            )
         except Exception as e:
             logging.error(f"Error occurred: {str(e)}")
             logging.error("Full traceback:")
