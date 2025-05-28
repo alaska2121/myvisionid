@@ -335,7 +335,10 @@ def get_birefnet_portrait_matting(input_image, checkpoint_path, ref_size=512):
     # Load model with caching
     sess = load_onnx_model(checkpoint_path)
     
-    # Rest of the function remains the same
+    # Get the input name from the model
+    input_name = sess.get_inputs()[0].name
+    logging.info(f"Model input name: {input_name}")
+    
     def transform_image(image):
         image = cv2.resize(image, (ref_size, ref_size))
         image = image.astype(np.float32) / 255.0
@@ -345,7 +348,9 @@ def get_birefnet_portrait_matting(input_image, checkpoint_path, ref_size=512):
 
     # Process image
     image = transform_image(input_image)
-    outputs = sess.run(None, {"input": image})
+    
+    # Use the correct input name from the model
+    outputs = sess.run(None, {input_name: image})
     alpha = outputs[0][0]
     alpha = np.transpose(alpha, (1, 2, 0))
     alpha = cv2.resize(alpha, (input_image.shape[1], input_image.shape[0]))
