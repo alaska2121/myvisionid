@@ -39,9 +39,9 @@ class ImageProcessor:
         self.active_requests: Dict[str, ProcessingRequest] = {}
         self.active_workers = 0  # Track number of active workers
         self.max_workers = 1  # Limit to 1 worker for Railway 8GB plan
-        self.memory_threshold = 0.6  # 60% memory threshold
-        self.critical_memory_threshold = 0.75  # 75% critical threshold
-        self.max_memory_mb = 7000  # 7GB max (leaving 1GB buffer)
+        self.memory_threshold = 0.3  # 30% memory threshold (more lenient)
+        self.critical_memory_threshold = 0.5  # 50% critical threshold (more lenient)
+        self.max_memory_mb = 6000  # 6GB max (leaving 2GB buffer)
         self.last_cleanup_time = time.time()
         self.cleanup_interval = 3  # Cleanup every 3 seconds
         
