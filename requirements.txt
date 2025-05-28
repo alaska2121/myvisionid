@@ -11,3 +11,4 @@ tqdm
 starlette
 psutil==5.9.0
 aiofiles==0.8.0
+gradio>=3.50.0
