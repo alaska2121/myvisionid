@@ -191,22 +191,25 @@ class ImageProcessor:
             if self._is_memory_critical():
                 raise Exception("Memory usage too high to process request")
             
-            # Process the request
-            result = await self.thread_pool.submit(
-                run,
-                input_image_path=request.temp_input,
-                output_image_path=request.temp_output,
-                type="add_background",
-                height=288,
-                width=240,
-                color="FFFFFF",  # Pure white
-                hd=True,
-                kb=None,
-                render=0,
-                dpi=300,
-                face_align=False,
-                matting_model=self.config.matting_model,
-                face_detect_model="retinaface-resnet50",
+            # Process the request using run_in_executor
+            loop = asyncio.get_event_loop()
+            result = await loop.run_in_executor(
+                self.thread_pool,
+                lambda: run(
+                    input_image_path=request.temp_input,
+                    output_image_path=request.temp_output,
+                    type="add_background",
+                    height=288,
+                    width=240,
+                    color="FFFFFF",  # Pure white
+                    hd=True,
+                    kb=None,
+                    render=0,
+                    dpi=300,
+                    face_align=False,
+                    matting_model=self.config.matting_model,
+                    face_detect_model="retinaface-resnet50",
+                )
             )
             
             # Check memory after processing
@@ -327,63 +330,45 @@ class ImageProcessor:
             # Ensure temp directory exists
             os.makedirs(os.path.dirname(temp_input), exist_ok=True)
             
-            logging.info(f"Saving to {temp_input}")
-            async with aiofiles.open(temp_input, 'wb') as f:
-                await f.write(content)
+            # Save file with retries
+            max_retries = 3
+            for attempt in range(max_retries):
+                try:
+                    logging.info(f"Saving to {temp_input} (attempt {attempt + 1}/{max_retries})")
+                    async with aiofiles.open(temp_input, 'wb') as f:
+                        await f.write(content)
+                    
+                    # Verify file was saved correctly
+                    if not os.path.exists(temp_input):
+                        raise FileNotFoundError(f"File not found after save: {temp_input}")
+                    
+                    # Verify file size
+                    file_size = os.path.getsize(temp_input)
+                    if file_size != len(content):
+                        raise ValueError(f"File size mismatch: saved={file_size}, original={len(content)}")
+                    
+                    # Verify it's a valid image
+                    import cv2
+                    test_image = cv2.imread(temp_input)
+                    if test_image is None:
+                        raise ValueError(f"Failed to read image with OpenCV: {temp_input}")
+                    
+                    logging.info(f"Image verification successful. Image shape: {test_image.shape}")
+                    return True, None
+                    
+                except Exception as save_error:
+                    logging.warning(f"Attempt {attempt + 1} failed: {str(save_error)}")
+                    if attempt == max_retries - 1:
+                        raise
+                    await asyncio.sleep(0.1)  # Small delay before retry
             
-            # Verify file was saved correctly
-            if not os.path.exists(temp_input):
-                logging.error(f"Failed to save file to {temp_input}")
-                return False, JSONResponse(
-                    status_code=500,
-                    content={
-                        "status": "error",
-                        "message": "Failed to save uploaded file."
-                    }
-                )
-            
-            # Verify file is readable and is a valid image
-            try:
-                # First check file size
-                with open(temp_input, 'rb') as f:
-                    test_content = f.read()
-                if len(test_content) != len(content):
-                    logging.error(f"File size mismatch: saved={len(test_content)}, original={len(content)}")
-                    return False, JSONResponse(
-                        status_code=500,
-                        content={
-                            "status": "error",
-                            "message": "File verification failed."
-                        }
-                    )
-                
-                # Then verify it's a valid image
-                import cv2
-                test_image = cv2.imread(temp_input)
-                if test_image is None:
-                    logging.error(f"Failed to read image with OpenCV: {temp_input}")
-                    return False, JSONResponse(
-                        status_code=400,
-                        content={
-                            "status": "error",
-                            "message": "Invalid image file. Please ensure the file is a valid image format (JPEG, PNG)."
-                        }
-                    )
-                
-                logging.info(f"Image verification successful. Image shape: {test_image.shape}")
-                
-            except Exception as verify_error:
-                logging.error(f"Error verifying saved file: {str(verify_error)}")
-                return False, JSONResponse(
-                    status_code=500,
-                    content={
-                        "status": "error",
-                        "message": "Failed to verify saved file."
-                    }
-                )
-            
-            logging.info("File saved and verified successfully")
-            return True, None
+            return False, JSONResponse(
+                status_code=500,
+                content={
+                    "status": "error",
+                    "message": "Failed to save and verify file after multiple attempts."
+                }
+            )
             
         except Exception as e:
             logging.error(f"Error in validate_and_save_file: {str(e)}")
