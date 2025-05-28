@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, TimeoutError
 import psutil
 import signal
 from contextlib import contextmanager
+import uuid
 
 # Set up logging
 log_dir = "logs"
@@ -113,9 +114,13 @@ async def process_image(file: UploadFile = File(...)):
     # Create temp directory if it doesn't exist
     os.makedirs("temp", exist_ok=True)
     
-    # Save uploaded file temporarily
-    temp_input = "temp/temp_input.jpg"
-    temp_output = "temp/temp_output.jpg"
+    # Generate two UUIDs for unique filenames
+    uuid1 = str(uuid.uuid4())
+    uuid2 = str(uuid.uuid4())
+    
+    # Save uploaded file temporarily with double UUID
+    temp_input = f"temp/{uuid1}_{uuid2}_input.jpg"
+    temp_output = f"temp/{uuid1}_{uuid2}_output.jpg"
     
     try:
         # Save uploaded file
