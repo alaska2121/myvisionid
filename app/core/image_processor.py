@@ -36,6 +36,10 @@ class ImageProcessor:
         self.processing_queue = asyncio.Queue(maxsize=100)  # Limit queue size
         self.active_requests: Dict[str, ProcessingRequest] = {}
         self.processing = False
+        
+        # Create temp directory if it doesn't exist
+        os.makedirs("temp", exist_ok=True)
+        
         logging.info(f"Initialized ImageProcessor with {cpu_count} workers")
         
         # Start the queue processor
