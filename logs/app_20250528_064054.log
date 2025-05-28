@@ -1,0 +1,6 @@
+2025-05-28 06:40:54,685 - INFO - Checking model files...
+2025-05-28 06:40:54,685 - INFO - Current working directory: /Users/albertoperedarojas/Downloads/alaskavision/myvisionid
+2025-05-28 06:40:54,685 - INFO - Directory contents: ['demo', '.DS_Store', 'app', 'LICENSE', 'requirements.txt', 'test', 'hivision', 'Dockerfile', '__pycache__', 'docs', '.devcontainer', 'README_KO.md', 'README.md', 'README_JP.md', 'logs', 'requirements-dev.txt', '.gitignore', 'README_EN.md', '.venv', 'scripts', '.github', 'app.py', 'inference.py', 'docker-compose.yml', 'app.spec', 'deploy_api.py', '.git', 'requirements-app.txt', 'modnet_photographic_portrait_matting', 'assets', 'inference working.py', 'inference_original.py', '.idea']
+2025-05-28 06:40:54,685 - ERROR - RetinaFace model not found at: retinaface/RetinaFace-R50.pth
+2025-05-28 06:40:54,685 - ERROR - Directory not found: retinaface
+2025-05-28 06:40:55,332 - INFO - HTTP Request: GET https://api.gradio.app/pkg-version "HTTP/1.1 200 OK"
