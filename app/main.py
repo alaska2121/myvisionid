@@ -4,6 +4,7 @@ from app.api.routes import router
 from app.middleware.rate_limiter import rate_limit_middleware
 from app.middleware.error_handler import error_handler_middleware
 from app.middleware.request_logger import request_logger_middleware
+from app.middleware.timeout import timeout_middleware
 
 app = FastAPI(
     title="Background Removal API",
@@ -20,7 +21,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Add custom middleware
+# Add custom middleware (order matters - timeout should be first)
+app.middleware("http")(timeout_middleware)
 app.middleware("http")(rate_limit_middleware)
 app.middleware("http")(error_handler_middleware)
 app.middleware("http")(request_logger_middleware)

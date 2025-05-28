@@ -9,6 +9,12 @@ services:
     command: python3 -u app.py --host 0.0.0.0 --port 7860
     ports:
       - '7860:7860'
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
 
   hivision_idphotos_api:
     build:
@@ -18,3 +24,33 @@ services:
     command: python3 deploy_api.py
     ports:
       - '8080:8080'
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 1G
+
+  myvisionid_api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: linzeyi/hivision_idphotos
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers 1
+    ports:
+      - '8000:8000'
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1.0'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+    environment:
+      - PYTHONUNBUFFERED=1
+      - OMP_NUM_THREADS=2
+      - MKL_NUM_THREADS=2
+    volumes:
+      - ./logs:/app/logs
+      - ./temp:/app/temp

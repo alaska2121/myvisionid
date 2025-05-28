@@ -12,4 +12,14 @@ image_processor = ImageProcessor(config)
 @router.post("/process-image")
 async def process_image(file: UploadFile = File(...)):
     """FastAPI endpoint for processing images."""
-    return await image_processor.process_image(file) 
+    return await image_processor.process_image(file)
+
+@router.get("/status")
+async def get_status():
+    """Get the current status of the image processor."""
+    return {
+        "status": "healthy",
+        "queue_size": image_processor.processing_queue.qsize(),
+        "active_requests": len(image_processor.active_requests),
+        "queue_maxsize": image_processor.processing_queue.maxsize
+    } 

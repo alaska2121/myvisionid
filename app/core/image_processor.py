@@ -24,47 +24,69 @@ class ProcessingRequest:
     temp_output: str
     start_time: datetime
     request_id: str
+    result_future: asyncio.Future
 
 class ImageProcessor:
-    """Main class for processing images."""
+    """Main class for processing images with proper queue management."""
     
     def __init__(self, config: Config):
         self.config = config
-        # Use number of CPU cores for max_workers, but leave one core free for system
-        cpu_count = max(1, psutil.cpu_count() - 1)
-        self.thread_pool = ThreadPoolExecutor(max_workers=cpu_count)
-        self.processing_queue = asyncio.Queue(maxsize=100)  # Limit queue size
+        # Use only 1 worker to prevent concurrent processing that causes memory issues
+        self.thread_pool = ThreadPoolExecutor(max_workers=1)
+        self.processing_queue = asyncio.Queue(maxsize=50)  # Limit queue size
         self.active_requests: Dict[str, ProcessingRequest] = {}
-        self.processing = False
         
         # Create temp directory if it doesn't exist
         os.makedirs("temp", exist_ok=True)
         
-        logging.info(f"Initialized ImageProcessor with {cpu_count} workers")
+        logging.info(f"Initialized ImageProcessor with 1 worker for sequential processing")
         
         # Start the queue processor
         asyncio.create_task(self._process_queue())
     
     async def _process_queue(self):
-        """Process queued requests."""
+        """Process queued requests sequentially."""
+        logging.info("Starting queue processor...")
         while True:
-            if not self.processing and not self.processing_queue.empty():
-                self.processing = True
+            try:
+                # Get request from queue (this blocks until a request is available)
+                request = await self.processing_queue.get()
+                logging.info(f"Processing queued request {request.request_id}")
+                
                 try:
-                    request = await self.processing_queue.get()
-                    logging.info(f"Processing queued request {request.request_id}")
-                    await self._process_single_request(request)
+                    # Process the request
+                    result = await self._process_single_request(request)
+                    # Set the result in the future
+                    if not request.result_future.done():
+                        request.result_future.set_result(result)
+                except Exception as e:
+                    # Set the exception in the future
+                    if not request.result_future.done():
+                        request.result_future.set_exception(e)
                 finally:
-                    self.processing = False
+                    # Mark task as done
                     self.processing_queue.task_done()
-            await asyncio.sleep(0.1)  # Prevent CPU spinning
+                    # Remove from active requests
+                    if request.request_id in self.active_requests:
+                        del self.active_requests[request.request_id]
+                    
+                    # Force garbage collection after each request
+                    force_garbage_collection()
+                    
+            except Exception as e:
+                logging.error(f"Error in queue processor: {str(e)}")
+                logging.error(traceback.format_exc())
+                await asyncio.sleep(1)  # Wait before retrying
     
     async def _process_single_request(self, request: ProcessingRequest):
         """Process a single request from the queue."""
         try:
+            logging.info(f"Starting processing for request {request.request_id}")
+            
             # Validate and save the uploaded file
             success, error_response = await self.validate_and_save_file(request.file, request.temp_input)
             if not success:
+                await self.cleanup_temp_files(request.temp_input, request.temp_output)
                 return error_response
             
             logging.info(f"Processing image for request {request.request_id}...")
@@ -88,8 +110,10 @@ class ImageProcessor:
             await self.cleanup_temp_files(request.temp_input, request.temp_output)
             
             force_garbage_collection()
+            log_memory_usage()
             
-            logging.info(f"Completed processing request {request.request_id}")
+            processing_time = (datetime.now() - request.start_time).total_seconds()
+            logging.info(f"Request completed: POST /process-image - Status: 200 - Time: {processing_time:.2f}s")
             
             # Return the processed image directly
             return Response(
@@ -112,12 +136,9 @@ class ImageProcessor:
                     "status": "error",
                     "message": str(e),
                     "type": type(e).__name__,
-                    "traceback": traceback.format_exc()
+                    "request_id": request.request_id
                 }
             )
-        finally:
-            if request.request_id in self.active_requests:
-                del self.active_requests[request.request_id]
 
     async def validate_and_save_file(self, file: UploadFile, temp_input: str) -> tuple[bool, JSONResponse | None]:
         """Validate and save the uploaded file."""
@@ -300,25 +321,27 @@ class ImageProcessor:
         """
         Process an uploaded image by adding a pure white background
         """
+        request_id = str(uuid.uuid4())
+        logging.info(f"Request started: POST /process-image")
         logging.info(f"Received file: {file.filename}")
         log_memory_usage()
         
         # Create temp directory if it doesn't exist
         os.makedirs("temp", exist_ok=True)
         
-        # Generate request ID and temp file paths
-        request_id = str(uuid.uuid4())
+        # Generate temp file paths
         temp_input = f"temp/{request_id}_input.jpg"
         temp_output = f"temp/{request_id}_output.jpg"
         
         try:
-            # Create processing request
+            # Create processing request with future for result
             request = ProcessingRequest(
                 file=file,
                 temp_input=temp_input,
                 temp_output=temp_output,
                 start_time=datetime.now(),
-                request_id=request_id
+                request_id=request_id,
+                result_future=asyncio.Future()
             )
             
             # Check if queue is full
@@ -328,21 +351,25 @@ class ImageProcessor:
                     content={
                         "status": "error",
                         "message": "Server is busy. Please try again in a few moments.",
-                        "type": "ServiceUnavailable"
+                        "type": "ServiceUnavailable",
+                        "request_id": request_id
                     }
                 )
             
             # Add to active requests
             self.active_requests[request_id] = request
             
-            # Process the request directly instead of using the queue
-            result = await self._process_single_request(request)
+            # Add request to queue for processing
+            await self.processing_queue.put(request)
+            logging.info(f"Request {request_id} added to queue. Queue size: {self.processing_queue.qsize()}")
             
-            # Clean up
-            if request_id in self.active_requests:
-                del self.active_requests[request_id]
-            
-            return result
+            # Wait for the result (this will block until processing is complete)
+            try:
+                result = await request.result_future
+                return result
+            except Exception as e:
+                logging.error(f"Error waiting for result: {str(e)}")
+                raise e
             
         except Exception as e:
             logging.error(f"Error occurred: {str(e)}")
@@ -360,6 +387,6 @@ class ImageProcessor:
                     "status": "error",
                     "message": str(e),
                     "type": type(e).__name__,
-                    "traceback": traceback.format_exc()
+                    "request_id": request_id
                 }
             ) 
