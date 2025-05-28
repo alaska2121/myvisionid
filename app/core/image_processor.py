@@ -39,9 +39,9 @@ class ImageProcessor:
         self.active_requests: Dict[str, ProcessingRequest] = {}
         self.active_workers = 0  # Track number of active workers
         self.max_workers = 1  # Limit to 1 worker for Railway 8GB plan
-        self.memory_threshold = 0.3  # 30% memory threshold (more lenient)
-        self.critical_memory_threshold = 0.5  # 50% critical threshold (more lenient)
-        self.max_memory_mb = 6000  # 6GB max (leaving 2GB buffer)
+        self.memory_threshold = 0.3  # 30% memory threshold
+        self.critical_memory_threshold = 0.5  # 50% critical threshold
+        self.max_memory_mb = 7000  # 7GB max (leaving 1GB buffer)
         self.last_cleanup_time = time.time()
         self.cleanup_interval = 3  # Cleanup every 3 seconds
         
@@ -108,8 +108,10 @@ class ImageProcessor:
                     except Exception as e:
                         logging.warning(f"Failed to remove temp file {file}: {str(e)}")
             
-            # Force garbage collection
-            force_garbage_collection()
+            # Force garbage collection multiple times
+            for _ in range(3):
+                force_garbage_collection()
+                time.sleep(0.1)  # Small delay between GC calls
             
             # Log memory state after cleanup
             self._log_memory_state("After cleanup")
@@ -220,8 +222,12 @@ class ImageProcessor:
                 )
             )
             
-            # Check memory after processing
+            # Force cleanup after processing
+            self._force_cleanup()
+            
+            # Check memory after processing and cleanup
             if self._is_memory_critical():
+                # Try one more aggressive cleanup
                 self._force_cleanup()
                 if self._is_memory_critical():
                     raise Exception("Memory usage too high after processing")
