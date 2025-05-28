@@ -35,16 +35,17 @@ class ImageProcessor:
         # Use number of CPU cores for max_workers, but leave one core free for system
         cpu_count = max(1, psutil.cpu_count() - 1)
         self.thread_pool = ThreadPoolExecutor(max_workers=cpu_count)
-        self.processing_queue = asyncio.Queue(maxsize=100)  # Limit queue size
+        self.processing_queue = asyncio.Queue(maxsize=50)  # Reduced queue size
         self.active_requests: Dict[str, ProcessingRequest] = {}
         self.active_workers = 0  # Track number of active workers
-        self.max_workers = cpu_count
-        self.memory_threshold = 0.8  # 80% memory threshold
+        self.max_workers = min(cpu_count, 4)  # Limit max workers to 4
+        self.memory_threshold = 0.7  # 70% memory threshold
+        self.critical_memory_threshold = 0.85  # 85% critical threshold
         
         # Create temp directory if it doesn't exist
         os.makedirs("temp", exist_ok=True)
         
-        logging.info(f"Initialized ImageProcessor with {cpu_count} workers")
+        logging.info(f"Initialized ImageProcessor with {self.max_workers} workers")
         
         # Start the queue processor
         asyncio.create_task(self._process_queue())
@@ -59,10 +60,21 @@ class ImageProcessor:
         available_memory = self._get_available_memory_percent()
         return available_memory > (1 - self.memory_threshold)
     
+    def _is_memory_critical(self) -> bool:
+        """Check if memory usage is at critical levels."""
+        available_memory = self._get_available_memory_percent()
+        return available_memory < (1 - self.critical_memory_threshold)
+    
     async def _process_queue(self):
         """Process queued requests using multiple workers."""
         while True:
             try:
+                # Check if memory is critical
+                if self._is_memory_critical():
+                    logging.warning("Critical memory usage detected, pausing queue processing")
+                    await asyncio.sleep(5)  # Wait longer when memory is critical
+                    continue
+                
                 # Check if we can start more workers
                 while (self.active_workers < self.max_workers and 
                        not self.processing_queue.empty() and 
@@ -85,9 +97,21 @@ class ImageProcessor:
         """Process a single request using a worker."""
         try:
             # Check memory before processing
+            if self._is_memory_critical():
+                logging.warning(f"Critical memory detected, rejecting request {request.request_id}")
+                request.result = JSONResponse(
+                    status_code=503,
+                    content={
+                        "status": "error",
+                        "message": "Server is currently under heavy load. Please try again in a few moments.",
+                        "type": "ServiceUnavailable"
+                    }
+                )
+                return
+            
             if not self._should_start_new_worker():
                 logging.warning(f"Low memory detected, delaying request {request.request_id}")
-                await asyncio.sleep(1)  # Wait for memory to free up
+                await asyncio.sleep(2)  # Wait longer for memory to free up
                 if not self._should_start_new_worker():
                     request.result = JSONResponse(
                         status_code=503,
@@ -364,6 +388,16 @@ class ImageProcessor:
         log_memory_usage()
         
         # Check memory before accepting new request
+        if self._is_memory_critical():
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "error",
+                    "message": "Server is currently under heavy load. Please try again in a few moments.",
+                    "type": "ServiceUnavailable"
+                }
+            )
+        
         if not self._should_start_new_worker():
             return JSONResponse(
                 status_code=503,
@@ -410,7 +444,7 @@ class ImageProcessor:
             await self.processing_queue.put(request)
             
             # Wait for processing to complete with timeout
-            timeout_seconds = 60  # 1 minute timeout
+            timeout_seconds = 30  # Reduced timeout to 30 seconds
             start_time = time.time()
             while request_id in self.active_requests:
                 if time.time() - start_time > timeout_seconds:
