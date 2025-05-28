@@ -193,18 +193,37 @@ def run(
             output_image_path = os.path.splitext(output_image_path)[0] + ".jpg"
             logging.info(f"Final output path: {output_image_path}")
 
-            if kb:
-                logging.info(f"Resizing image to {kb}KB...")
-                resize_image_to_kb(result_image, output_image_path, int(kb), dpi=dpi)
-            else:
-                logging.info(f"Saving image with DPI {dpi}...")
-                save_image_dpi_to_bytes(result_image, output_image_path, dpi=dpi)
+            try:
+                if kb:
+                    logging.info(f"Resizing image to {kb}KB...")
+                    resize_image_to_kb(result_image, output_image_path, int(kb), dpi=dpi)
+                else:
+                    logging.info(f"Saving image with DPI {dpi}...")
+                    save_image_dpi_to_bytes(result_image, output_image_path, dpi=dpi)
+                
+                # Verify the file was saved
+                if not os.path.exists(output_image_path):
+                    raise ValueError(f"Failed to save output image to {output_image_path}")
+                
+                # Verify the file is readable
+                test_read = cv2.imread(output_image_path)
+                if test_read is None:
+                    raise ValueError(f"Saved image at {output_image_path} is not readable")
+                
+                logging.info("Image saved successfully")
+                log_memory_usage()
+                
+            except Exception as save_error:
+                logging.error(f"Error saving image: {str(save_error)}")
+                logging.error("Full traceback:")
+                logging.error(traceback.format_exc())
+                raise ValueError(f"Failed to save processed image: {str(save_error)}")
             
-            # Force garbage collection
-            gc.collect()
-            log_memory_usage()
+            finally:
+                # Clean up memory
+                gc.collect()
+                log_memory_usage()
             
-            logging.info("Image processing completed successfully")
             return
 
         elif type == "generate_layout_photos":
