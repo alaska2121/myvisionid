@@ -24,6 +24,7 @@ class ProcessingRequest:
     temp_output: str
     start_time: datetime
     request_id: str
+    result: Response | JSONResponse | None = None
 
 class ImageProcessor:
     """Main class for processing images."""
@@ -35,7 +36,8 @@ class ImageProcessor:
         self.thread_pool = ThreadPoolExecutor(max_workers=cpu_count)
         self.processing_queue = asyncio.Queue(maxsize=100)  # Limit queue size
         self.active_requests: Dict[str, ProcessingRequest] = {}
-        self.processing = False
+        self.active_workers = 0  # Track number of active workers
+        self.max_workers = cpu_count
         
         # Create temp directory if it doesn't exist
         os.makedirs("temp", exist_ok=True)
@@ -46,18 +48,40 @@ class ImageProcessor:
         asyncio.create_task(self._process_queue())
     
     async def _process_queue(self):
-        """Process queued requests."""
+        """Process queued requests using multiple workers."""
         while True:
-            if not self.processing and not self.processing_queue.empty():
-                self.processing = True
-                try:
-                    request = await self.processing_queue.get()
-                    logging.info(f"Processing queued request {request.request_id}")
-                    await self._process_single_request(request)
-                finally:
-                    self.processing = False
-                    self.processing_queue.task_done()
+            # Check if we can start more workers
+            while self.active_workers < self.max_workers and not self.processing_queue.empty():
+                request = await self.processing_queue.get()
+                self.active_workers += 1
+                logging.info(f"Starting worker {self.active_workers} for request {request.request_id}")
+                
+                # Process request in background
+                asyncio.create_task(self._process_with_worker(request))
+            
             await asyncio.sleep(0.1)  # Prevent CPU spinning
+    
+    async def _process_with_worker(self, request: ProcessingRequest):
+        """Process a single request using a worker."""
+        try:
+            result = await self._process_single_request(request)
+            # Store result in request for later retrieval
+            request.result = result
+        except Exception as e:
+            logging.error(f"Error in worker processing request {request.request_id}: {str(e)}")
+            request.result = JSONResponse(
+                status_code=500,
+                content={
+                    "status": "error",
+                    "message": str(e),
+                    "type": type(e).__name__
+                }
+            )
+        finally:
+            self.active_workers -= 1
+            self.processing_queue.task_done()
+            if request.request_id in self.active_requests:
+                del self.active_requests[request.request_id]
     
     async def _process_single_request(self, request: ProcessingRequest):
         """Process a single request from the queue."""
@@ -311,38 +335,39 @@ class ImageProcessor:
         temp_input = f"temp/{request_id}_input.jpg"
         temp_output = f"temp/{request_id}_output.jpg"
         
-        try:
-            # Create processing request
-            request = ProcessingRequest(
-                file=file,
-                temp_input=temp_input,
-                temp_output=temp_output,
-                start_time=datetime.now(),
-                request_id=request_id
+        # Create processing request
+        request = ProcessingRequest(
+            file=file,
+            temp_input=temp_input,
+            temp_output=temp_output,
+            start_time=datetime.now(),
+            request_id=request_id
+        )
+        
+        # Check if queue is full
+        if self.processing_queue.full():
+            return JSONResponse(
+                status_code=503,
+                content={
+                    "status": "error",
+                    "message": "Server is busy. Please try again in a few moments.",
+                    "type": "ServiceUnavailable"
+                }
             )
+        
+        # Add to active requests
+        self.active_requests[request_id] = request
+        
+        try:
+            # Add to processing queue
+            await self.processing_queue.put(request)
             
-            # Check if queue is full
-            if self.processing_queue.full():
-                return JSONResponse(
-                    status_code=503,
-                    content={
-                        "status": "error",
-                        "message": "Server is busy. Please try again in a few moments.",
-                        "type": "ServiceUnavailable"
-                    }
-                )
+            # Wait for processing to complete
+            while request_id in self.active_requests:
+                await asyncio.sleep(0.1)
             
-            # Add to active requests
-            self.active_requests[request_id] = request
-            
-            # Process the request directly instead of using the queue
-            result = await self._process_single_request(request)
-            
-            # Clean up
-            if request_id in self.active_requests:
-                del self.active_requests[request_id]
-            
-            return result
+            # Return the result
+            return request.result
             
         except Exception as e:
             logging.error(f"Error occurred: {str(e)}")
